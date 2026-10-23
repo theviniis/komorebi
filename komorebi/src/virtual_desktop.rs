@@ -142,6 +142,8 @@ pub enum DesktopEventKind {
     },
     CountChanged,
     Moved {
+        /// The desktop's new index. Always equal to `new`; it exists as a named
+        /// field for ergonomics at call sites.
         desktop: usize,
         old: usize,
         new: usize,
@@ -153,12 +155,23 @@ pub enum DesktopEventKind {
 
 static EVENT_THREAD: OnceLock<winvd::DesktopEventThread> = OnceLock::new();
 
+fn event_thread_start_lock() -> &'static Mutex<()> {
+    static EVENT_THREAD_START: OnceLock<Mutex<()>> = OnceLock::new();
+    EVENT_THREAD_START.get_or_init(|| Mutex::new(()))
+}
+
 /// Starts listening for native desktop events, translating them to
 /// [`DesktopEventKind`] and invoking `cb` on a dedicated thread.
 ///
 /// This is the only place in komorebi that touches
 /// `winvd::listen_desktop_events`.
 pub fn spawn_event_thread(cb: impl Fn(DesktopEventKind) + Send + 'static) -> eyre::Result<()> {
+    // The listener has to be created before the `OnceLock` slot can be
+    // claimed, so the check-then-start-then-set sequence is serialized behind a
+    // lock. Without it two concurrent callers could both pass the check and
+    // start listeners, and the loser's listener would leak after `set` fails.
+    let _start_guard = event_thread_start_lock().lock();
+
     if EVENT_THREAD.get().is_some() {
         eyre::bail!("the desktop event thread is already running");
     }
@@ -322,6 +335,7 @@ pub mod testing {
         }
 
         fn desktop_name(&self, idx: usize) -> eyre::Result<Option<String>> {
+            self.ensure_desktop_exists(idx)?;
             Ok(self.state.lock().names.get(&idx).cloned())
         }
 
@@ -372,14 +386,25 @@ mod tests {
         assert!(fake.switch_desktop(2).is_err());
         assert!(fake.move_window_to_desktop(11, 2).is_err());
         assert!(fake.desktop_idx_for_window(11).is_err());
+        assert!(fake.desktop_name(2).is_err());
+    }
+
+    /// Restores the real backend even if the test panics, so a failed assertion
+    /// cannot leave a fake installed for every other test in the crate.
+    struct InstalledBackendGuard;
+
+    impl Drop for InstalledBackendGuard {
+        fn drop(&mut self) {
+            set_backend(None);
+        }
     }
 
     #[test]
     fn installed_backend_is_returned_by_backend() {
         let fake: Arc<dyn DesktopBackend> = Arc::new(FakeDesktopBackend::new(1));
         set_backend(Some(fake.clone()));
+        let _guard = InstalledBackendGuard;
         assert!(Arc::ptr_eq(&backend(), &fake));
-        set_backend(None);
     }
 
     #[test]
