@@ -54,6 +54,7 @@ use komorebi::state::State;
 use komorebi::static_config::StaticConfig;
 use komorebi::theme_manager;
 use komorebi::transparency_manager;
+use komorebi::version_gate::require_supported_windows;
 use komorebi::window_manager::WindowManager;
 use komorebi::windows_api::WindowsApi;
 use komorebi::winevent_listener;
@@ -197,6 +198,8 @@ struct Opts {
 #[tracing::instrument]
 #[allow(clippy::cognitive_complexity)]
 fn main() -> eyre::Result<()> {
+    require_supported_windows()?;
+
     let opts: Opts = Opts::parse();
     CUSTOM_FFM.store(opts.focus_follows_mouse, Ordering::SeqCst);
 
