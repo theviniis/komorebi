@@ -56,9 +56,9 @@ fn build_floor_is_26100_2605() {
 Run: `cargo test -p komorebi version_gate`
 Expected: FAIL — `cannot find function is_supported_build`.
 
-- [ ] **Step 3: Implement the module**
+- [ ] **Step 3: Implement `is_supported_build` and `require_supported_windows`**
 
-`is_supported_build` = `build > MIN_BUILD || (build == MIN_BUILD && ubr >= MIN_UBR)`. `require_supported_windows` lê `CurrentBuildNumber` (String) e `UBR` (u32) de `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion` via `winreg` e devolve `Err` com o build detectado e o mínimo no texto. Valores ilegíveis contam como não suportado.
+`is_supported_build` = `build > MIN_BUILD || (build == MIN_BUILD && ubr >= MIN_UBR)`. `require_supported_windows` lê `CurrentBuildNumber` (string) e `UBR` (u32) de `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion` via `winreg`, e devolve `Err` com build detectado e mínimo exigido no texto. Valor ilegível conta como não suportado.
 
 - [ ] **Step 4: Run it and watch it pass**
 
@@ -102,7 +102,17 @@ pub fn backend() -> Arc<dyn DesktopBackend>;
 pub fn set_backend(b: Option<Arc<dyn DesktopBackend>>);
 pub fn desktop_idx_from_winvd(v: u32) -> usize;
 pub fn desktop_idx_to_winvd(idx: usize) -> eyre::Result<i32>;
+
+pub enum DesktopEventKind {
+    Changed { new: usize, old: usize },
+    CountChanged,
+    Moved { desktop: usize, old: usize, new: usize },
+    Renamed { desktop: usize },
+}
+pub fn spawn_event_thread(cb: impl Fn(DesktopEventKind) + Send + 'static) -> eyre::Result<()>;
 ```
+
+`spawn_event_thread` é a única função que toca `winvd::listen_desktop_events`; mantém o `DesktopEventThread` num `OnceLock` estático e traduz para `DesktopEventKind` antes de chamar `cb`.
 
 - Produces também, em `#[cfg(test)] pub mod testing`: `FakeDesktopBackend` com `new(count: usize)`, `set_window_desktop(hwnd, idx)`, `switch_calls() -> usize`, `moved() -> Vec<(isize, usize)>`, `names() -> HashMap<usize, String>`.
 
@@ -302,8 +312,8 @@ git commit -m "feat(wm): switch workspaces by switching native desktops"
 - Modify: `komorebi/src/window_manager_event.rs` (novas variantes + `Display`), `komorebi/src/process_event.rs`, `komorebi/src/main.rs`
 
 **Interfaces:**
-- Consumes: `WindowManager::sync_desktop_count`, `focused_desktop_idx`.
-- Produces: variantes `WindowManagerEvent::DesktopChanged { new: usize, old: usize }`, `WindowManagerEvent::DesktopCountChanged`, `WindowManagerEvent::DesktopMoved { desktop: usize, old: usize, new: usize }`, `WindowManagerEvent::DesktopRenamed { desktop: usize }`; `pub fn listen_for_desktop_events(tx: Sender<WindowManagerEvent>)`.
+- Consumes: `virtual_desktop::spawn_event_thread`, `WindowManager::sync_desktop_count`, `focused_desktop_idx`.
+- Produces: variantes `WindowManagerEvent::DesktopChanged { new: usize, old: usize }`, `WindowManagerEvent::DesktopCountChanged`, `WindowManagerEvent::DesktopMoved { desktop: usize, old: usize, new: usize }`, `WindowManagerEvent::DesktopRenamed { desktop: usize }`; `pub fn listen_for_desktop_events(tx: Sender<WindowManagerEvent>) -> eyre::Result<()>`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -334,7 +344,7 @@ Expected: FAIL — variantes inexistentes.
 
 - [ ] **Step 3: Implement the listener**
 
-Thread própria consumindo `winvd::listen_desktop_events`; o `winvd::DesktopEventThread` fica num `OnceLock` estático para não ser dropado. Mapeamento: `DesktopChanged{new,old}` → `DesktopChanged`, `DesktopCreated`/`DesktopDestroyed` → `DesktopCountChanged`, `DesktopMoved` → `DesktopMoved`, `DesktopNameChanged(desktop, _)` → `DesktopRenamed { desktop: desktop.get_index() }`, `WindowChanged` → ignorado.
+`desktop_listener.rs` chama `virtual_desktop::spawn_event_thread` com um closure que traduz `DesktopEventKind` em `WindowManagerEvent` e envia pelo canal `tx`. Nenhum `winvd::` aparece neste arquivo — o mapeamento já vem pronto do módulo `virtual_desktop` (Task 2).
 
 - [ ] **Step 4: Implement the `process_event` arms**
 
@@ -469,11 +479,11 @@ git commit -m "feat(wm): move containers between native desktops"
 
 **Files:**
 - Modify: `komorebi/src/window_manager.rs:3567-3655`, `komorebi/src/process_command.rs:1396-1407`, `komorebic/src/main.rs`
-- Modify: `komorebi/src/monitor.rs` (sai `workspace_names`)
+- Modify: `komorebi/src/monitor.rs` (`workspace_names` sai de `Monitor`, mas `Monitor::focus_workspace` perde o uso dele), `komorebi/src/state.rs:295`, `komorebi/src/window_manager.rs:3818` (`monitor_workspace_index_by_name`)
 
 **Interfaces:**
 - Consumes: `DesktopBackend::{set_desktop_name, desktop_name}`.
-- Produces: `WindowManager.workspace_names: HashMap<usize, String>` (global).
+- Produces: `WindowManager.workspace_names: HashMap<usize, String>` (global) e `WindowManager::monitor_workspace_index_by_name(&self, name: &str) -> Option<(usize, usize)>` devolvendo `(focused_monitor_idx, workspace_idx)`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -592,13 +602,14 @@ git commit -m "refactor: remove registry-based virtual desktop tracking"
 fn cloak_from_desktop_transition_does_not_trigger_reconciliation() {
     let (mut wm, fake) = setup_window_manager_with_fake_desktops(3);
     fake.set_window_desktop(42, 0);
-    // janela 42 está registrada no workspace 0, foco vai para o desktop 1
+    // janela 42 vive no desktop 0; o foco vai para o desktop 1
     wm.focus_desktop(1).unwrap();
     assert!(wm.is_desktop_transition_cloak(Window::from(42)));
+    HIDDEN_HWNDS.lock().clear();
     wm.process_event(WindowManagerEvent::Cloak(
         WinEvent::ObjectCloaked, Window::from(42))).unwrap();
-    assert_eq!(wm.known_hwnds.get(&42), Some(&(0, 0)));
     assert_eq!(wm.focused_desktop_idx, 1);
+    assert!(!HIDDEN_HWNDS.lock().contains(&42));
 }
 
 #[test]
