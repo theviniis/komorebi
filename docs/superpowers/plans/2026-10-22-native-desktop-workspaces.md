@@ -4,7 +4,7 @@
 
 **Goal:** komorebi espelha os desktops virtuais do Windows numa lista global compartilhada por todos os monitores, trocando workspaces com `switch_desktop` em vez de esconder janelas.
 
-**Architecture:** Cada monitor mantém `Vec<Workspace>` com um item por desktop; o índice focado é único em `WindowManager`. `winvd` fica encapsulado em `virtual_desktop.rs` atrás de uma trait `DesktopBackend` injetável.
+**Architecture:** Cada monitor mantém `Vec<Workspace>` com um item por desktop; o índice focado é único em `WindowManager`. `winvd` fica encapsulado em `virtual_desktop.rs` atrás de uma trait `DesktopBackend` injetável, com backend falso para os testes.
 
 **Tech Stack:** Rust 2024, crate `windows` 0.62, `winvd` 0.0.49, testes `#[cfg(test)]` por módulo (`cargo test -p komorebi`).
 
@@ -18,14 +18,15 @@
 - `workspace_idx` significa sempre índice de desktop nativo.
 - Nenhuma chamada `hide`/`restore` de workspace no caminho de troca de desktop. `HidingBehaviour` sobrevive apenas para stacks.
 - Nenhum módulo além de `virtual_desktop.rs` importa `winvd`.
+- `Ring` não tem `resize`; resize é sempre `monitor.workspaces_mut().resize(n, Workspace::default())` sobre o `VecDeque`.
 
 ## Review Focus
 
-1. Trocar de desktop gera cloak/uncloak automático; o komorebi não pode interpretar isso como ação do usuário nem remover a janela do gerenciamento.
-2. Janela criada num desktop não visível não pode receber foco, não pode mover `focused_desktop_idx`, e não pode ser tratada como órfã pelo reaper.
-3. Bordas overlay pertencem ao desktop onde nasceram; após a troca precisam ser redesenhadas no desktop novo.
-4. `komorebic state` com monitores de comprimentos diferentes depois de criar um desktop no Task View.
-5. Cliente antigo enviando `new-workspace` esperando workspaces novos — deve receber no-op e continuar funcionando.
+1. Trocar de desktop gera cloak/uncloak automático em massa; o komorebi não pode tratar isso como ação do usuário nem desgerenciar a janela. (teste na Task 10)
+2. Janelas em desktops não visíveis não podem ser reportadas como órfãs pelo reaper. (teste na Task 12)
+3. Bordas overlay pertencem ao desktop onde nasceram; após a troca precisam ser recriadas no desktop novo. (teste na Task 11)
+4. `apply_state` com quantidade de workspaces diferente da de desktops não pode perder janelas nem deixar monitores com comprimentos divergentes. (teste na Task 14)
+5. Cliente antigo enviando `new-workspace` esperando workspaces novos deve receber no-op e o processo continuar íntegro. (teste na Task 8)
 
 ---
 
@@ -33,12 +34,10 @@
 
 **Files:**
 - Create: `komorebi/src/version_gate.rs`
-- Modify: `komorebi/src/lib.rs` (adicionar `pub mod version_gate;`)
-- Modify: `komorebi/src/main.rs` (primeira linha de `main()`)
-- Test: testes inline em `komorebi/src/version_gate.rs`
+- Modify: `komorebi/src/lib.rs` (`pub mod version_gate;`), `komorebi/src/main.rs` (primeira instrução de `main()`)
 
 **Interfaces:**
-- Produces: `pub const MIN_BUILD: u32 = 26100;`, `pub const MIN_UBR: u32 = 2605;`, `pub fn is_supported_build(build: u32, ubr: u32) -> bool`, `pub fn require_supported_windows() -> eyre::Result<()>`
+- Produces: `pub const MIN_BUILD: u32 = 26100`, `pub const MIN_UBR: u32 = 2605`, `pub fn is_supported_build(build: u32, ubr: u32) -> bool`, `pub fn require_supported_windows() -> eyre::Result<()>`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -52,23 +51,23 @@ fn build_floor_is_26100_2605() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run it and watch it fail**
 
 Run: `cargo test -p komorebi version_gate`
 Expected: FAIL — `cannot find function is_supported_build`.
 
-- [ ] **Step 3: Implement `is_supported_build` and `require_supported_windows`**
+- [ ] **Step 3: Implement the module**
 
-`is_supported_build` = `build > MIN_BUILD || (build == MIN_BUILD && ubr >= MIN_UBR)`. `require_supported_windows` lê `CurrentBuildNumber` (string) e `UBR` (u32) de `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion` via `winreg`, e devolve `Err` com build detectado e mínimo exigido no texto.
+`is_supported_build` = `build > MIN_BUILD || (build == MIN_BUILD && ubr >= MIN_UBR)`. `require_supported_windows` lê `CurrentBuildNumber` (String) e `UBR` (u32) de `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion` via `winreg` e devolve `Err` com o build detectado e o mínimo no texto. Valores ilegíveis contam como não suportado.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 4: Run it and watch it pass**
 
 Run: `cargo test -p komorebi version_gate`
 Expected: PASS.
 
-- [ ] **Step 5: Wire into `main()`**
+- [ ] **Step 5: Call it from `main()`**
 
-`require_supported_windows()?` como primeira instrução de `main()`, antes de `WindowsApi::allow_set_foreground_window`.
+`require_supported_windows()?` antes de `WindowsApi::allow_set_foreground_window`.
 
 - [ ] **Step 6: Commit**
 
@@ -79,16 +78,13 @@ git commit -m "feat: require windows 11 24h2 for native desktop support"
 
 ---
 
-### Task 2: Camada `virtual_desktop`
+### Task 2: Camada `virtual_desktop` e backend falso
 
 **Files:**
 - Create: `komorebi/src/virtual_desktop.rs`
-- Modify: `komorebi/Cargo.toml` (adicionar `winvd = "0.0.49"`)
-- Modify: `komorebi/src/lib.rs`
-- Test: testes inline em `komorebi/src/virtual_desktop.rs`
+- Modify: `komorebi/Cargo.toml` (`winvd = "0.0.49"`), `komorebi/src/lib.rs`
 
 **Interfaces:**
-- Consumes: nada de tarefas anteriores.
 - Produces:
 
 ```rust
@@ -108,7 +104,9 @@ pub fn desktop_idx_from_winvd(v: u32) -> usize;
 pub fn desktop_idx_to_winvd(idx: usize) -> eyre::Result<i32>;
 ```
 
-- [ ] **Step 1: Write the failing test**
+- Produces também, em `#[cfg(test)] pub mod testing`: `FakeDesktopBackend` com `new(count: usize)`, `set_window_desktop(hwnd, idx)`, `switch_calls() -> usize`, `moved() -> Vec<(isize, usize)>`, `names() -> HashMap<usize, String>`.
+
+- [ ] **Step 1: Write the failing tests**
 
 ```rust
 #[test]
@@ -117,18 +115,28 @@ fn desktop_index_conversions_roundtrip() {
     assert_eq!(desktop_idx_to_winvd(2).unwrap(), 2);
     assert!(desktop_idx_to_winvd(usize::MAX).is_err());
 }
+
+#[test]
+fn fake_backend_records_operations() {
+    let fake = FakeDesktopBackend::new(3);
+    fake.set_window_desktop(7, 2);
+    assert_eq!(fake.desktop_count().unwrap(), 3);
+    assert_eq!(fake.desktop_idx_for_window(7).unwrap(), 2);
+    fake.switch_desktop(1).unwrap();
+    assert_eq!(fake.switch_calls(), 1);
+}
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run and watch them fail**
 
 Run: `cargo test -p komorebi virtual_desktop`
-Expected: FAIL — módulo não existe.
+Expected: FAIL — módulo inexistente.
 
 - [ ] **Step 3: Implement the module**
 
-`WinvdBackend` delega a `winvd::{get_desktop_count, get_current_desktop, switch_desktop, get_desktop_by_window, move_window_to_desktop, get_desktop}`. Toda função converte `winvd::Error` em `eyre` com contexto e loga `tracing::error!` antes de propagar. `desktop_name` retorna `Ok(None)` para nome vazio.
+`WinvdBackend` delega a `winvd::{get_desktop_count, get_current_desktop, switch_desktop, get_desktop_by_window, move_window_to_desktop, get_desktop}`; `desktop_name` usa `get_desktop(idx).get_name()` e devolve `Ok(None)` para string vazia. Todo `winvd::Error` vira `eyre` com contexto. `backend()` devolve o backend instalado por `set_backend` ou, na ausência, um `OnceLock` com `WinvdBackend`. `FakeDesktopBackend` guarda estado em `Mutex`/atômicos.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 4: Run and watch them pass**
 
 Run: `cargo test -p komorebi virtual_desktop && cargo build -p komorebi`
 Expected: PASS e build limpo.
@@ -145,21 +153,21 @@ git commit -m "feat: add virtual_desktop wrapper around winvd"
 ### Task 3: Índice de desktop global no modelo
 
 **Files:**
-- Modify: `komorebi/src/window_manager.rs` (struct `WindowManager`, `focused_workspace_idx`, `focused_workspace`, `focused_workspace_mut`)
-- Modify: `komorebi/src/monitor.rs` (novo `sync_workspace_count`)
-- Modify: `komorebi/src/state.rs` (refletir índice global)
-- Test: `komorebi/src/monitor.rs`, `komorebi/src/window_manager.rs`
+- Modify: `komorebi/src/window_manager.rs` (struct `WindowManager`; `focused_workspace_idx`, `focused_workspace`, `focused_workspace_mut`, `focused_workspace_idx_for_monitor_idx`)
+- Modify: `komorebi/src/monitor.rs` (`sync_workspace_count`)
+- Modify: `komorebi/src/state.rs`
 
 **Interfaces:**
 - Consumes: `virtual_desktop::backend()`, `DesktopBackend::desktop_count`.
-- Produces: `WindowManager.focused_desktop_idx: usize`, `WindowManager.desktop_count: usize`, `WindowManager::sync_desktop_count(&mut self) -> eyre::Result<()>`, `Monitor::sync_workspace_count(&mut self, count: usize)`.
+- Produces: `WindowManager.focused_desktop_idx: usize`, `WindowManager.desktop_count: usize`, `WindowManager::sync_desktop_count(&mut self) -> eyre::Result<()>`, `Monitor::sync_workspace_count(&mut self, count: usize)`, `Monitor::set_focused_workspace_idx(&mut self, idx: usize)`.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
 ```rust
+// monitor.rs
 #[test]
-fn sync_workspace_count_grows_and_shrinks_preserving_first() {
-    let mut m = monitor::new(0, Rect::default(), Rect::default(),
+fn sync_workspace_count_grows_and_shrinks_keeping_index_zero() {
+    let mut m = Monitor::new(0, Rect::default(), Rect::default(),
         "M".into(), "D".into(), "DID".into(), Some("SN".into()));
     m.sync_workspace_count(3);
     assert_eq!(m.workspaces().len(), 3);
@@ -168,27 +176,57 @@ fn sync_workspace_count_grows_and_shrinks_preserving_first() {
     m.sync_workspace_count(1);
     assert_eq!(m.workspaces().len(), 1);
 }
+
+#[test]
+fn set_focused_workspace_idx_updates_the_monitor_ring() {
+    let mut m = Monitor::new(0, Rect::default(), Rect::default(),
+        "M".into(), "D".into(), "DID".into(), Some("SN".into()));
+    m.sync_workspace_count(3);
+    m.set_focused_workspace_idx(2);
+    assert_eq!(m.focused_workspace_idx(), 2);
+}
+
+// window_manager.rs
+#[test]
+fn sync_desktop_count_keeps_monitors_uniform() {
+    let (mut wm, _fake) = setup_window_manager_with_fake_desktops(3);
+    wm.sync_desktop_count().unwrap();
+    assert_eq!(wm.desktop_count, 3);
+    for m in wm.monitors() {
+        assert_eq!(m.workspaces().len(), 3);
+    }
+}
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run and watch them fail**
 
-Run: `cargo test -p komorebi sync_workspace_count`
-Expected: FAIL — método inexistente.
+Run: `cargo test -p komorebi sync_workspace_count sync_desktop_count`
+Expected: FAIL — métodos inexistentes.
 
 - [ ] **Step 3: Implement `sync_workspace_count` and `sync_desktop_count`**
 
-`sync_workspace_count` usa `Ring::resize`. `sync_desktop_count` lê `desktop_count` do backend, aplica `sync_workspace_count` em todos os monitores, ajusta `focused_desktop_idx = min(focused_desktop_idx, count-1)`, e grava `self.desktop_count`. Documentar a invariante em comentário: todo monitor tem `len() == desktop_count` e `focused_idx == focused_desktop_idx`.
+`sync_workspace_count` = `self.workspaces_mut().resize(count.max(1), Workspace::default())`. `sync_desktop_count` lê `backend().desktop_count()?`, aplica em todos os monitores, grava `self.desktop_count`, e ajusta `self.focused_desktop_idx = self.focused_desktop_idx.min(count.saturating_sub(1))`, chamando `Monitor::set_focused_workspace_idx` em todos os monitores. Comentar a invariante: todo monitor tem `workspaces().len() == desktop_count` e `focused_workspace_idx()` igual ao índice global.
 
-- [ ] **Step 4: Route focused-workspace accessors through the global index**
+`Monitor::set_focused_workspace_idx` apenas chama `self.workspaces.focus(idx)` (o `Ring` continua sendo o armazenamento do índice dentro do monitor); a fonte da verdade é o campo do `WindowManager`.
 
-`WindowManager::focused_workspace_idx()` retorna `Ok(self.focused_desktop_idx)`; `focused_workspace()`/`focused_workspace_mut()` indexam esse valor no monitor focado.
+- [ ] **Step 4: Route the accessors through the global index**
 
-- [ ] **Step 5: Run tests**
+`focused_workspace_idx()` devolve `Ok(self.focused_desktop_idx)`. `focused_workspace()`/`focused_workspace_mut()` indexam esse valor em `monitor.workspaces().get(self.focused_desktop_idx)` (sem consultar `Ring::focused`). `focused_workspace_idx_for_monitor_idx(_)` devolve o índice global, ignorando o `Ring` daquele monitor.
+
+- [ ] **Step 5: Keep the per-monitor ring index in sync**
+
+`sync_desktop_count` e `focus_desktop` chamam `Monitor::set_focused_workspace_idx(self.focused_desktop_idx)` em todos os monitores, para que `monitor.focused_workspace()` (usado por código que não passa pelo `WindowManager`) continue coerente.
+
+- [ ] **Step 6: Add the test helper**
+
+`setup_window_manager_with_fake_desktops(count: usize) -> (WindowManager, Arc<FakeDesktopBackend>)` em `#[cfg(test)] mod tests` de `window_manager.rs`: instala o fake via `set_backend`, cria o `WindowManager`, insere um monitor de teste e chama `sync_desktop_count`.
+
+- [ ] **Step 7: Run the whole suite**
 
 Run: `cargo test -p komorebi`
-Expected: PASS, ajustando testes existentes que assumiam índice por monitor.
+Expected: PASS, corrigindo os testes que dependiam de `Ring<Workspace>` focado por monitor.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add komorebi/src/window_manager.rs komorebi/src/monitor.rs komorebi/src/state.rs
@@ -200,12 +238,11 @@ git commit -m "refactor(wm): single global focused workspace index"
 ### Task 4: Troca de workspace via desktop nativo
 
 **Files:**
-- Modify: `komorebi/src/window_manager.rs` (`focus_workspace` → `focus_desktop`)
-- Modify: `komorebi/src/process_command.rs` (braços `FocusWorkspaceNumber`, `FocusWorkspaceNumbers`, `FocusMonitorWorkspaceNumber`)
-- Test: `komorebi/src/window_manager.rs`
+- Modify: `komorebi/src/window_manager.rs:3803` (`focus_workspace` → `focus_desktop`)
+- Modify: `komorebi/src/process_command.rs:1217-1268`
 
 **Interfaces:**
-- Consumes: `DesktopBackend::switch_desktop`, `WindowManager.focused_desktop_idx`.
+- Consumes: `DesktopBackend::switch_desktop`, `WindowManager.focused_desktop_idx`, `desktop_count`.
 - Produces: `WindowManager::focus_desktop(&mut self, idx: usize) -> eyre::Result<()>`.
 
 - [ ] **Step 1: Write the failing test**
@@ -213,33 +250,40 @@ git commit -m "refactor(wm): single global focused workspace index"
 ```rust
 #[test]
 fn focus_desktop_moves_every_monitor_to_the_same_index() {
-    // backend falso com desktop_count() == 3
-    let (mut wm, _ctx) = setup_window_manager_with_fake_desktops(3);
+    let (mut wm, fake) = setup_window_manager_with_fake_desktops(3);
     wm.focus_desktop(2).unwrap();
     assert_eq!(wm.focused_desktop_idx, 2);
+    assert_eq!(fake.switch_calls(), 1);
     for m in wm.monitors() {
         assert_eq!(m.focused_workspace_idx(), 2);
         assert_eq!(m.workspaces().len(), 3);
     }
 }
+
+#[test]
+fn focus_desktop_rejects_out_of_range_index() {
+    let (mut wm, fake) = setup_window_manager_with_fake_desktops(3);
+    assert!(wm.focus_desktop(3).is_err());
+    assert_eq!(fake.switch_calls(), 0);
+}
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run and watch them fail**
 
 Run: `cargo test -p komorebi focus_desktop`
 Expected: FAIL — método inexistente.
 
 - [ ] **Step 3: Implement `focus_desktop`**
 
-Valida `idx < self.desktop_count`, chama `backend().switch_desktop(idx)`, grava `focused_desktop_idx`, chama `self.update_focused_workspace(false, true)`. `focus_workspace` passa a delegar para `focus_desktop`.
+Valida `idx < self.desktop_count` (senão `bail!`), chama `backend().switch_desktop(idx)?`, grava `focused_desktop_idx = idx`, e chama `self.update_focused_workspace(false, true)`. `WindowManager::focus_workspace` passa a ser um alias que delega para `focus_desktop`.
 
 - [ ] **Step 4: Rewrite the socket handlers**
 
-`FocusWorkspaceNumber(n)` → `focus_desktop(n)`. `FocusWorkspaceNumbers(n)` → idem (sem loop por monitor). `FocusMonitorWorkspaceNumber(m, n)` → `focus_monitor(m)` + `focus_desktop(n)`.
+`FocusWorkspaceNumber(n)` → `focus_desktop(n)`; `FocusWorkspaceNumbers(n)` → idem (sem loop por monitor); `FocusMonitorWorkspaceNumber(m, n)` → `focus_monitor(m)` e depois `focus_desktop(n)`.
 
-- [ ] **Step 5: Run tests and manual check**
+- [ ] **Step 5: Run tests, then check by hand**
 
-Run: `cargo test -p komorebi`, depois `komorebic focus-workspace 2` numa máquina com 3 desktops.
+Run: `cargo test -p komorebi`, depois `komorebic focus-workspace 2` com 3 desktops abertos.
 Expected: testes PASS; o Windows troca para o desktop 2 e o layout é aplicado.
 
 - [ ] **Step 6: Commit**
@@ -255,16 +299,13 @@ git commit -m "feat(wm): switch workspaces by switching native desktops"
 
 **Files:**
 - Create: `komorebi/src/desktop_listener.rs`
-- Modify: `komorebi/src/window_manager_event.rs` (novas variantes)
-- Modify: `komorebi/src/process_event.rs` (braços novos no `match`)
-- Modify: `komorebi/src/main.rs` (iniciar listener)
-- Test: `komorebi/src/process_event.rs`
+- Modify: `komorebi/src/window_manager_event.rs` (novas variantes + `Display`), `komorebi/src/process_event.rs`, `komorebi/src/main.rs`
 
 **Interfaces:**
-- Consumes: `WindowManager::sync_desktop_count`, `WindowManager.focused_desktop_idx`.
-- Produces: variantes `WindowManagerEvent::DesktopChanged { new: usize, old: usize }`, `DesktopCountChanged`, `DesktopMoved { desktop: usize, old: usize, new: usize }`; `pub fn listen_for_desktop_events(tx: Sender<WindowManagerEvent>)`.
+- Consumes: `WindowManager::sync_desktop_count`, `focused_desktop_idx`.
+- Produces: variantes `WindowManagerEvent::DesktopChanged { new: usize, old: usize }`, `WindowManagerEvent::DesktopCountChanged`, `WindowManagerEvent::DesktopMoved { desktop: usize, old: usize, new: usize }`, `WindowManagerEvent::DesktopRenamed { desktop: usize }`; `pub fn listen_for_desktop_events(tx: Sender<WindowManagerEvent>)`.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
 ```rust
 #[test]
@@ -272,30 +313,40 @@ fn desktop_changed_updates_index_without_switching_back() {
     let (mut wm, fake) = setup_window_manager_with_fake_desktops(3);
     wm.process_event(WindowManagerEvent::DesktopChanged { new: 1, old: 0 }).unwrap();
     assert_eq!(wm.focused_desktop_idx, 1);
-    assert_eq!(fake.switch_calls(), 0); // não reenvia switch_desktop
+    assert_eq!(fake.switch_calls(), 0);
+}
+
+#[test]
+fn desktop_moved_permutes_workspaces_on_every_monitor() {
+    let (mut wm, _fake) = setup_window_manager_with_fake_desktops(3);
+    wm.process_event(WindowManagerEvent::DesktopMoved { desktop: 0, old: 0, new: 2 }).unwrap();
+    for m in wm.monitors() {
+        assert_eq!(m.workspaces().len(), 3);
+    }
+    assert_eq!(wm.focused_desktop_idx, 2);
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run and watch them fail**
 
-Run: `cargo test -p komorebi desktop_changed`
-Expected: FAIL — variante inexistente.
+Run: `cargo test -p komorebi desktop_changed desktop_moved`
+Expected: FAIL — variantes inexistentes.
 
 - [ ] **Step 3: Implement the listener**
 
-Thread dedicada; guarda o `winvd::DesktopEventThread` num `OnceLock` estático para não ser dropado. Mapeia `DesktopChanged{new,old}`, `DesktopCreated`/`DesktopDestroyed`/`DesktopMoved`, `DesktopNameChanged`. `WindowChanged` é ignorado (já coberto pelos WinEvents).
+Thread própria consumindo `winvd::listen_desktop_events`; o `winvd::DesktopEventThread` fica num `OnceLock` estático para não ser dropado. Mapeamento: `DesktopChanged{new,old}` → `DesktopChanged`, `DesktopCreated`/`DesktopDestroyed` → `DesktopCountChanged`, `DesktopMoved` → `DesktopMoved`, `DesktopNameChanged(desktop, _)` → `DesktopRenamed { desktop: desktop.get_index() }`, `WindowChanged` → ignorado.
 
 - [ ] **Step 4: Implement the `process_event` arms**
 
-`DesktopChanged` → atualiza índice + `update_focused_workspace`, sem chamar `switch_desktop`. `DesktopCountChanged` → `sync_desktop_count()` + `update_focused_workspace`. `DesktopMoved` → permuta os workspaces `old`/`new` em todos os monitores.
+`DesktopChanged` → grava `focused_desktop_idx` e `update_focused_workspace(false, true)`, sem chamar `switch_desktop`. `DesktopCountChanged` → `sync_desktop_count()` e `update_focused_workspace(false, true)`. `DesktopMoved` → move o `Workspace` da posição `old` para `new` em todos os monitores, atualiza `focused_desktop_idx` para o novo índice do desktop que estava focado. `DesktopRenamed` → relê `backend().desktop_name(idx)?` e grava em `workspace.name` de todos os monitores no índice correspondente.
 
 - [ ] **Step 5: Start the listener from `main()`**
 
-Antes de `listen_for_events(wm.clone())`.
+`listen_for_desktop_events(...)` antes de `listen_for_events(wm.clone())`, no mesmo canal de eventos.
 
-- [ ] **Step 6: Run tests and manual check**
+- [ ] **Step 6: Run tests, then check by hand**
 
-Run: `cargo test -p komorebi desktop`, depois Win+Ctrl+→ e conferir `komorebic state`.
+Run: `cargo test -p komorebi desktop`, depois Win+Ctrl+→ e `komorebic state`.
 Expected: testes PASS; o índice focado acompanha o desktop nativo.
 
 - [ ] **Step 7: Commit**
@@ -312,7 +363,6 @@ git commit -m "feat: mirror native desktop events into window manager"
 **Files:**
 - Modify: `komorebi/src/window_manager.rs` (novo `desktop_idx_for_new_window`)
 - Modify: `komorebi/src/process_event.rs` (braço `Manage`)
-- Test: `komorebi/src/process_event.rs`
 
 **Interfaces:**
 - Consumes: `DesktopBackend::desktop_idx_for_window`, `focused_desktop_idx`.
@@ -326,29 +376,29 @@ fn window_born_on_other_desktop_is_tiled_without_stealing_focus() {
     let (mut wm, fake) = setup_window_manager_with_fake_desktops(3);
     fake.set_window_desktop(42, 2);
     wm.focus_desktop(0).unwrap();
-    wm.desktop_idx_for_new_window(Window::from(42)).unwrap();
+    let idx = wm.desktop_idx_for_new_window(Window::from(42)).unwrap();
+    assert_eq!(idx, 2);
     assert_eq!(wm.focused_desktop_idx, 0);
-    assert_eq!(fake.focus_calls_for(42), 0);
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run and watch it fail**
 
-Run: `cargo test -p komorebi new_window_desktop`
+Run: `cargo test -p komorebi window_born_on_other_desktop`
 Expected: FAIL — método inexistente.
 
 - [ ] **Step 3: Implement `desktop_idx_for_new_window`**
 
-Consulta o backend. Se o índice for igual a `focused_desktop_idx`, retorna-o (fluxo normal). Senão, ainda retorna o índice de origem; quem chamou decide inserir sem foco.
+Devolve `backend().desktop_idx_for_window(window.hwnd)?` limitado a `desktop_count.saturating_sub(1)`. Não altera foco nem estado.
 
-- [ ] **Step 4: Wire into the `Manage` arm**
+- [ ] **Step 4: Wire it into the `Manage` arm**
 
-Quando o índice retornado difere do focado, inserir no workspace daquele índice sem `Window::focus`. Regras de `workspace_matching_rules` continuam aplicando depois, via `move_window_to_desktop`.
+Se o índice devolvido for diferente de `focused_desktop_idx`, inserir a janela no workspace daquele índice do monitor correspondente **sem** chamar `Window::focus`. Se for igual, o fluxo atual continua intacto. Regras de `workspace_matching_rules` aplicam depois, via `move_window_to_desktop`.
 
-- [ ] **Step 5: Run test to verify it passes**
+- [ ] **Step 5: Run tests, then check by hand**
 
-Run: `cargo test -p komorebi new_window_desktop`
-Expected: PASS.
+Run: `cargo test -p komorebi window_born`, depois abrir um app com foco num desktop diferente do dele.
+Expected: PASS; a janela aparece tileada no desktop de origem quando você troca para lá, e o desktop atual não muda.
 
 - [ ] **Step 6: Commit**
 
@@ -359,18 +409,17 @@ git commit -m "feat(wm): keep new windows on their native desktop"
 
 ---
 
-### Task 7: Mover janela entre desktops
+### Task 7: Mover container entre desktops
 
 **Files:**
-- Modify: `komorebi/src/window_manager.rs` (`move_container_to_workspace`, `move_workspace_to_monitor`)
+- Modify: `komorebi/src/window_manager.rs:1737` (`move_container_to_workspace`), `move_workspace_to_monitor`
 - Modify: `komorebi/src/process_command.rs` (`SwapWorkspacesToMonitorNumber`, `CycleMoveContainerToWorkspace`)
-- Test: `komorebi/src/window_manager.rs`
 
 **Interfaces:**
-- Consumes: `DesktopBackend::move_window_to_desktop`, `WindowManager.focus_desktop`.
-- Produces: comportamento novo em `move_container_to_workspace`; erro explícito em `move_workspace_to_monitor`.
+- Consumes: `DesktopBackend::move_window_to_desktop`, `WindowManager::focus_desktop`.
+- Produces: `move_container_to_workspace` movendo janelas via backend; `move_workspace_to_monitor` retornando erro.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
 ```rust
 #[test]
@@ -379,22 +428,28 @@ fn move_container_moves_every_window_to_target_desktop() {
     // container com hwnds 10 e 11 no desktop 0
     wm.move_container_to_workspace(2, false, None).unwrap();
     assert_eq!(fake.moved(), vec![(10, 2), (11, 2)]);
-    assert_eq!(wm.focused_desktop_idx, 0); // follow = false
+    assert_eq!(wm.focused_desktop_idx, 0);
+}
+
+#[test]
+fn moving_a_workspace_to_another_monitor_is_rejected() {
+    let (mut wm, _fake) = setup_window_manager_with_fake_desktops(3);
+    assert!(wm.move_workspace_to_monitor(0).is_err());
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run and watch them fail**
 
-Run: `cargo test -p komorebi move_container_moves_every`
+Run: `cargo test -p komorebi move_container_moves_every moving_a_workspace`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement the move**
 
-Coletar todos os hwnds do container (tiling, stack, flutuantes, maximizado, monocle) antes de remover, chamar `backend().move_window_to_desktop(hwnd, idx)` para cada um, inserir no workspace de destino, e só focar o desktop destino se `follow == true`.
+Antes de remover, coletar todos os hwnds do container (tiling, stack, flutuantes, maximizado, monocle). Chamar `backend().move_window_to_desktop(hwnd, idx)?` para cada um, inserir o container no workspace de destino, e chamar `focus_desktop(idx)` apenas se `follow == true`.
 
-- [ ] **Step 4: Rewrite the impossible commands**
+- [ ] **Step 4: Reject the commands with no equivalent**
 
-`move_workspace_to_monitor` e `SwapWorkspacesToMonitorNumber` retornam `eyre::bail!("swapping workspaces between monitors is not supported with native desktops")`. `CycleMoveContainerToWorkspace` cicla sobre `desktop_count` em vez de `monitor.workspaces().len()`.
+`move_workspace_to_monitor` e o braço `SwapWorkspacesToMonitorNumber` passam a `eyre::bail!("swapping workspaces between monitors is not supported with native desktops")`. `CycleMoveContainerToWorkspace` cicla sobre `self.desktop_count` em vez de `monitor.workspaces().len()`.
 
 - [ ] **Step 5: Run tests**
 
@@ -410,50 +465,57 @@ git commit -m "feat(wm): move containers between native desktops"
 
 ---
 
-### Task 8: CLI, nomes e no-ops
+### Task 8: Nomes de desktop e no-ops de CLI
 
 **Files:**
-- Modify: `komorebi/src/window_manager.rs` (`ensure_workspaces_for_monitor`, `ensure_named_workspaces_for_monitor`, `set_workspace_name`, `new_workspace`)
-- Modify: `komorebi/src/process_command.rs`
-- Modify: `komorebic/src/main.rs`
-- Test: `komorebi/src/window_manager.rs`
+- Modify: `komorebi/src/window_manager.rs:3567-3655`, `komorebi/src/process_command.rs:1396-1407`, `komorebic/src/main.rs`
+- Modify: `komorebi/src/monitor.rs` (sai `workspace_names`)
 
 **Interfaces:**
-- Consumes: `DesktopBackend::set_desktop_name`, `DesktopBackend::desktop_name`.
-- Produces: `WindowManager.workspace_names: HashMap<usize, String>` global (sai de `Monitor`).
+- Consumes: `DesktopBackend::{set_desktop_name, desktop_name}`.
+- Produces: `WindowManager.workspace_names: HashMap<usize, String>` (global).
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
 ```rust
 #[test]
 fn workspace_name_is_written_to_the_native_desktop() {
     let (mut wm, fake) = setup_window_manager_with_fake_desktops(2);
     wm.set_workspace_name(0, 1, "web".to_string()).unwrap();
-    assert_eq!(fake.desktop_name(1), Some("web".to_string()));
+    assert_eq!(fake.names().get(&1).map(String::as_str), Some("web"));
     for m in wm.monitors() {
         assert_eq!(m.workspaces()[1].name.as_deref(), Some("web"));
     }
 }
+
+#[test]
+fn new_workspace_is_a_noop() {
+    let (mut wm, fake) = setup_window_manager_with_fake_desktops(2);
+    wm.new_workspace().unwrap();
+    assert_eq!(wm.desktop_count, 2);
+    assert_eq!(fake.desktop_count().unwrap(), 2);
+    assert_eq!(wm.monitors()[0].workspaces().len(), 2);
+}
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run and watch them fail**
 
-Run: `cargo test -p komorebi workspace_name_is_written`
+Run: `cargo test -p komorebi workspace_name_is_written new_workspace_is_a_noop`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement name propagation**
 
-`set_workspace_name` chama o backend e grava o nome em todos os monitores e em `workspace_names`. Na inicialização e em `DesktopNameChanged`, os nomes vêm do backend.
+`set_workspace_name(monitor_idx, workspace_idx, name)` chama `backend().set_desktop_name(workspace_idx, &name)?`, grava em `self.workspace_names` e em `workspace.name` de **todos** os monitores. Na inicialização (`init`/`sync_desktop_count`), os nomes vêm de `backend().desktop_name(i)?` quando presentes.
 
 - [ ] **Step 4: Turn workspace creation into no-ops**
 
-`new_workspace`, `ensure_workspaces_for_monitor` e `ensure_named_workspaces_for_monitor` passam a apenas `tracing::warn!("desktops are managed by the task view")` e retornam `Ok(())`.
+`new_workspace`, `ensure_workspaces_for_monitor` e `ensure_named_workspaces_for_monitor` apenas `tracing::warn!("desktops are managed by the task view")` e retornam `Ok(())`.
 
 - [ ] **Step 5: Hide the unusable CLI command**
 
-`swap-workspaces-with-monitor` recebe `#[clap(hide = true)]` e retorna erro explicativo.
+`swap-workspaces-with-monitor` recebe `#[clap(hide = true)]`; a mensagem enviada já é rejeitada pela Task 7.
 
-- [ ] **Step 6: Run tests**
+- [ ] **Step 6: Run tests and build**
 
 Run: `cargo test -p komorebi && cargo build --workspace`
 Expected: PASS.
@@ -461,7 +523,7 @@ Expected: PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add komorebi/src/window_manager.rs komorebi/src/process_command.rs komorebic/src/main.rs
+git add komorebi/src/window_manager.rs komorebi/src/process_command.rs komorebi/src/monitor.rs komorebic/src/main.rs
 git commit -m "feat(cli): reflect native desktops in workspace commands"
 ```
 
@@ -470,42 +532,36 @@ git commit -m "feat(cli): reflect native desktops in workspace commands"
 ### Task 9: Remover a máquina de virtual desktop antiga
 
 **Files:**
-- Modify: `komorebi/src/lib.rs` (remover `current_virtual_desktop`, `CURRENT_VIRTUAL_DESKTOP`, `VirtualDesktopNotification`)
-- Modify: `komorebi/src/process_event.rs` (remover o bloco de "ignorar eventos fora do desktop")
-- Modify: `komorebi/src/window_manager.rs` (remover `virtual_desktop_id`)
-- Modify: `komorebi/src/state.rs` (remover `current_virtual_desktop_id`)
-- Modify: `komorebi/src/static_config.rs`
-- Modify: `komorebi-bar/src/widgets/komorebi.rs`
-- Test: `komorebi/src/state.rs`
+- Modify: `komorebi/src/lib.rs:287-346`, `komorebi/src/process_event.rs:200-261`, `komorebi/src/window_manager.rs:90`, `komorebi/src/state.rs:160`, `komorebi/src/static_config.rs:1340`, `komorebi-bar/src/widgets/komorebi.rs`
 
 **Interfaces:**
-- Consumes: `WindowManagerEvent::DesktopChanged`, `DesktopCountChanged` (Task 5).
-- Produces: `NotificationEvent::Desktop(DesktopNotification)` substituindo `VirtualDesktop`.
+- Consumes: `WindowManagerEvent::{DesktopChanged, DesktopCountChanged}` (Task 5).
+- Produces: `NotificationEvent::Desktop(DesktopNotification)` no lugar de `VirtualDesktop`; `sync_desktop_count()` no início de `process_event`.
 
 - [ ] **Step 1: Write the failing test**
 
 ```rust
 #[test]
-fn serialized_state_has_no_legacy_virtual_desktop_fields() {
+fn serialized_global_state_has_no_legacy_virtual_desktop_field() {
     let json = serde_json::to_string(&GlobalState::default()).unwrap();
     assert!(!json.contains("current_virtual_desktop_id"));
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run and watch it fail**
 
-Run: `cargo test -p komorebi serialized_state_has_no_legacy`
+Run: `cargo test -p komorebi serialized_global_state`
 Expected: FAIL.
 
 - [ ] **Step 3: Delete the legacy machinery**
 
-Remover `current_virtual_desktop()`, `CURRENT_VIRTUAL_DESKTOP`, `virtual_desktop_id`, `current_virtual_desktop_id`, `VirtualDesktopNotification`, e o bloco de `process_event` que retornava cedo fora do desktop associado. No lugar, `sync_desktop_count()` no início de `process_event`.
+Remover `current_virtual_desktop()`, `CURRENT_VIRTUAL_DESKTOP`, `WindowManager.virtual_desktop_id`, `GlobalState.current_virtual_desktop_id`, `VirtualDesktopNotification`, e o bloco de `process_event` que retornava cedo fora do desktop associado. No lugar, `self.sync_desktop_count()?` no início de `process_event`.
 
 - [ ] **Step 4: Update the bar**
 
-`komorebi-bar` troca a assinatura de `VirtualDesktop` por `Desktop` e re-renderiza em `DesktopChanged`.
+`komorebi-bar` troca `VirtualDesktop` por `Desktop` e re-renderiza em `DesktopChanged`.
 
-- [ ] **Step 5: Run tests**
+- [ ] **Step 5: Run tests and build**
 
 Run: `cargo test -p komorebi && cargo build --workspace`
 Expected: PASS.
@@ -519,13 +575,174 @@ git commit -m "refactor: remove registry-based virtual desktop tracking"
 
 ---
 
-### Task 10: Enxugar hide/restore
+### Task 10: Filtrar cloak automático da troca de desktop
 
 **Files:**
-- Modify: `komorebi/src/monitor.rs` (`load_focused_workspace`)
-- Modify: `komorebi/src/workspace.rs` (`hide`)
-- Modify: `komorebi/src/window_manager.rs` (`restore_all_windows`)
-- Test: `komorebi/src/monitor.rs`
+- Modify: `komorebi/src/process_event.rs` (braços `Cloak`/`Uncloak`, `uncloack_to_ignore`)
+- Modify: `komorebi/src/window_manager.rs` (novo `desktop_transition_pending`)
+
+**Interfaces:**
+- Consumes: `DesktopBackend::current_desktop_idx`, `focused_desktop_idx`.
+- Produces: `WindowManager::is_desktop_transition_cloak(&self, window: Window) -> bool`.
+
+- [ ] **Step 1: Write the failing test**
+
+```rust
+#[test]
+fn cloak_from_desktop_transition_does_not_trigger_reconciliation() {
+    let (mut wm, fake) = setup_window_manager_with_fake_desktops(3);
+    fake.set_window_desktop(42, 0);
+    // janela 42 está registrada no workspace 0, foco vai para o desktop 1
+    wm.focus_desktop(1).unwrap();
+    assert!(wm.is_desktop_transition_cloak(Window::from(42)));
+    wm.process_event(WindowManagerEvent::Cloak(
+        WinEvent::ObjectCloaked, Window::from(42))).unwrap();
+    assert_eq!(wm.known_hwnds.get(&42), Some(&(0, 0)));
+    assert_eq!(wm.focused_desktop_idx, 1);
+}
+
+#[test]
+fn cloak_on_the_focused_desktop_is_still_processed() {
+    let (mut wm, fake) = setup_window_manager_with_fake_desktops(3);
+    fake.set_window_desktop(43, 1);
+    wm.focus_desktop(1).unwrap();
+    assert!(!wm.is_desktop_transition_cloak(Window::from(43)));
+}
+```
+
+- [ ] **Step 2: Run and watch them fail**
+
+Run: `cargo test -p komorebi cloak`
+Expected: FAIL — método inexistente.
+
+- [ ] **Step 3: Implement the filter**
+
+`is_desktop_transition_cloak` devolve `true` quando o desktop nativo da janela (`backend().desktop_idx_for_window(hwnd)?`) difere de `focused_desktop_idx` — ou seja, o cloak veio do Windows escondendo outro desktop, não de uma ação do usuário. Os braços `Cloak`/`Uncloak` de `process_event` retornam cedo nesse caso, sem reconciliação, sem `hide`/`restore`, sem alterar `known_hwnds`. `uncloack_to_ignore` deixa de ser necessário e é removido junto com sua contagem. O cloak de uma janela do desktop focado continua caindo no fluxo atual.
+
+- [ ] **Step 4: Run tests**
+
+Run: `cargo test -p komorebi cloak`
+Expected: PASS.
+
+- [ ] **Step 5: Check by hand**
+
+Manual: alternar 10× entre desktops com uma janela minimizada e uma em stack.
+Expected: nenhuma janela sai do gerenciamento, nenhuma entra em `HIDDEN_HWNDS`.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add komorebi/src/process_event.rs komorebi/src/window_manager.rs
+git commit -m "fix(wm): ignore cloak events caused by native desktop transitions"
+```
+
+---
+
+### Task 11: Redesenhar bordas após a troca
+
+**Files:**
+- Modify: `komorebi/src/window_manager.rs` (`focus_desktop`, `DesktopChanged`)
+- Modify: `komorebi/src/border_manager/mod.rs`
+
+**Interfaces:**
+- Consumes: `focus_desktop`.
+- Produces: `pub(crate) fn redraw_borders_for_focused_desktop(wm: &WindowManager)`; em testes, `pub(crate) static BORDER_REDRAWS: AtomicUsize`.
+
+- [ ] **Step 1: Write the failing test**
+
+```rust
+#[test]
+fn switching_desktop_redraws_borders_once() {
+    let (mut wm, _fake) = setup_window_manager_with_fake_desktops(3);
+    let before = border_manager::BORDER_REDRAWS.load(Ordering::SeqCst);
+    wm.focus_desktop(1).unwrap();
+    assert_eq!(border_manager::BORDER_REDRAWS.load(Ordering::SeqCst), before + 1);
+}
+```
+
+- [ ] **Step 2: Run and watch it fail**
+
+Run: `cargo test -p komorebi switching_desktop_redraws_borders`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement the redraw**
+
+`redraw_borders_for_focused_desktop` destrói as bordas do desktop que saiu (`border_manager::destroy_all_borders`) e recria as do workspace focado de cada monitor com `win32`/`dwm`. Incrementa `BORDER_REDRAWS`. Chamado ao fim de `focus_desktop` e no braço `DesktopChanged`.
+
+- [ ] **Step 4: Run tests**
+
+Run: `cargo test -p komorebi redraws_borders`
+Expected: PASS.
+
+- [ ] **Step 5: Check by hand**
+
+Manual: trocar de desktop com bordas habilitadas.
+Expected: bordas aparecem no desktop novo, nenhuma borda órfã fica no antigo.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add komorebi/src/window_manager.rs komorebi/src/border_manager/mod.rs
+git commit -m "fix(borders): redraw borders after native desktop switches"
+```
+
+---
+
+### Task 12: Reaper e reconciliação com desktops invisíveis
+
+**Files:**
+- Modify: `komorebi/src/reaper.rs` (`watch_for_orphans`)
+- Modify: `komorebi/src/monitor_reconciliator/mod.rs`
+- Modify: `komorebi/src/window_manager.rs` (novo `is_window_on_other_desktop`)
+
+**Interfaces:**
+- Consumes: `DesktopBackend::desktop_idx_for_window`, `focused_desktop_idx`, `known_hwnds`.
+- Produces: `WindowManager::is_window_on_other_desktop(&self, hwnd: isize) -> bool`.
+
+- [ ] **Step 1: Write the failing test**
+
+```rust
+#[test]
+fn window_on_other_desktop_is_not_reaped() {
+    let (mut wm, fake) = setup_window_manager_with_fake_desktops(3);
+    fake.set_window_desktop(99, 2);
+    wm.focus_desktop(0).unwrap();
+    assert!(wm.is_window_on_other_desktop(99));
+}
+```
+
+- [ ] **Step 2: Run and watch it fail**
+
+Run: `cargo test -p komorebi window_on_other_desktop`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement the guard**
+
+`is_window_on_other_desktop` = `backend().desktop_idx_for_window(hwnd).ok().is_some_and(|i| i != self.focused_desktop_idx)`. `watch_for_orphans` ignora hwnds nessa condição antes de reportar órfão. `monitor_reconciliator` não reposiciona nem remove janelas de outros desktops.
+
+- [ ] **Step 4: Run tests**
+
+Run: `cargo test -p komorebi`
+Expected: PASS.
+
+- [ ] **Step 5: Check by hand**
+
+Manual: deixar uma janela num desktop, trocar para outro, esperar 30s.
+Expected: a janela continua gerenciada ao voltar.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add komorebi/src/reaper.rs komorebi/src/monitor_reconciliator/mod.rs komorebi/src/window_manager.rs
+git commit -m "fix(wm): never reap windows living on other desktops"
+```
+
+---
+
+### Task 13: Parar de esconder janelas na troca de workspace
+
+**Files:**
+- Modify: `komorebi/src/monitor.rs:170` (`load_focused_workspace`), `komorebi/src/workspace.rs:389` (`hide`), `komorebi/src/window_manager.rs:1393` (`restore_all_windows`)
 
 **Interfaces:**
 - Consumes: nada novo.
@@ -539,30 +756,29 @@ fn load_focused_workspace_does_not_hide_other_workspaces() {
     let mut m = Monitor::new(0, Rect::default(), Rect::default(),
         "M".into(), "D".into(), "DID".into(), Some("SN".into()));
     m.sync_workspace_count(2);
-    assert_eq!(m.workspaces()[1].focused_container().map(|_| ()), None);
+    HIDDEN_HWNDS.lock().clear();
     m.load_focused_workspace(false).unwrap();
-    // nenhum hwnd entra em HIDDEN_HWNDS por causa de troca de workspace
     assert!(HIDDEN_HWNDS.lock().is_empty());
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run and watch it fail**
 
 Run: `cargo test -p komorebi does_not_hide_other_workspaces`
-Expected: FAIL.
+Expected: FAIL (o loop atual empurra hwnds para `HIDDEN_HWNDS`).
 
 - [ ] **Step 3: Stop hiding on workspace switch**
 
-`load_focused_workspace` só restaura e posiciona o workspace focado. `Workspace::hide` permanece apenas para uso em stacks via `Container::load_focused_window`.
+`load_focused_workspace` só chama `restore` no workspace focado; o loop que chama `workspace.hide(None)` sai. `Workspace::hide` permanece apenas para uso em stacks via `Container::load_focused_window`.
 
 - [ ] **Step 4: Stop touching other desktops on shutdown**
 
-`restore_all_windows` limita-se ao desktop atual; janelas em outros desktops ficam como estão.
+`restore_all_windows` remove acentos, título e transparência apenas do workspace focado de cada monitor; janelas em outros desktops ficam como estão.
 
-- [ ] **Step 5: Run tests and manual check**
+- [ ] **Step 5: Run tests, then check by hand**
 
-Run: `cargo test -p komorebi`. Manual: 10 trocas de desktop seguidas; nenhuma janela some, nenhuma borda fica órfã.
-Expected: PASS nos testes; comportamento limpo no manual.
+Run: `cargo test -p komorebi`. Manual: 10 trocas de desktop seguidas com apps Electron e um stack.
+Expected: PASS; nenhuma janela some, nenhuma borda órfã.
 
 - [ ] **Step 6: Commit**
 
@@ -573,17 +789,16 @@ git commit -m "refactor: stop hiding windows when switching workspaces"
 
 ---
 
-### Task 11: Restauração de estado
+### Task 14: Restauração de estado
 
 **Files:**
-- Modify: `komorebi/src/window_manager.rs` (`apply_state`)
-- Test: `komorebi/src/window_manager.rs`
+- Modify: `komorebi/src/window_manager.rs:185` (`apply_state`), `komorebi/src/main.rs:318` (propagar o `Result`)
 
 **Interfaces:**
 - Consumes: `WindowManager::sync_desktop_count`.
-- Produces: `apply_state` reconciliado com `desktop_count`.
+- Produces: `WindowManager::apply_state(&mut self, state: State) -> eyre::Result<()>` (assinatura muda de `()` para `Result`).
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
 ```rust
 #[test]
@@ -591,21 +806,32 @@ fn applying_state_with_fewer_workspaces_than_desktops_keeps_all_desktops() {
     let (mut wm, _fake) = setup_window_manager_with_fake_desktops(3);
     let mut state = State::from(&wm);
     state.monitors.elements_mut()[0].workspaces.elements_mut().truncate(2);
-    wm.apply_state(state);
+    wm.apply_state(state).unwrap();
     assert_eq!(wm.monitors()[0].workspaces().len(), 3);
+}
+
+#[test]
+fn applying_state_with_more_workspaces_than_desktops_does_not_lose_windows() {
+    let (mut wm, _fake) = setup_window_manager_with_fake_desktops(2);
+    let mut state = State::from(&wm);
+    while state.monitors.elements()[0].workspaces().len() < 3 {
+        state.monitors.elements_mut()[0].workspaces.elements_mut().push_back(Workspace::default());
+    }
+    wm.apply_state(state).unwrap();
+    assert_eq!(wm.monitors()[0].workspaces().len(), 2);
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run and watch them fail**
 
-Run: `cargo test -p komorebi applying_state_with_fewer`
+Run: `cargo test -p komorebi applying_state`
 Expected: FAIL.
 
 - [ ] **Step 3: Reconcile before applying**
 
-`apply_state` chama `sync_desktop_count` primeiro; aplica `min(state_len, desktop_count)` workspaces; o excedente do estado é descartado e as janelas dele voltam como flutuantes no último desktop válido.
+`apply_state` chama `sync_desktop_count()?` antes do loop, aplica `min(state_len, desktop_count)` workspaces por monitor, e para o excedente re-adota as janelas como flutuantes no desktop `desktop_count - 1` em vez de descartá-las. O early-return de contagem de monitores divergente continua igual. Atualizar a chamada em `main.rs` para `wm.lock().apply_state(state)?;`.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 4: Run tests**
 
 Run: `cargo test -p komorebi applying_state`
 Expected: PASS.
@@ -613,34 +839,33 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add komorebi/src/window_manager.rs
+git add komorebi/src/window_manager.rs komorebi/src/main.rs
 git commit -m "fix(wm): reconcile restored state with native desktops"
 ```
 
 ---
 
-### Task 12: Documentação e schema
+### Task 15: Documentação e schema
 
 **Files:**
-- Modify: `README.md` (requisito de versão)
-- Modify: `docs/installation.md`, `docs/design.md`, `docs/usage/*.md`
+- Modify: `README.md:67`, `docs/installation.md`, `docs/design.md`, `docs/usage/*.md`
 - Regenerate: `schema.json`, `schema.bar.json`
 
 **Interfaces:**
-- Consumes: comportamento implementado nas tarefas 1–11.
+- Consumes: comportamento implementado nas tarefas 1–14.
 - Produces: documentação e schema coerentes.
 
 - [ ] **Step 1: Update the version floor**
 
-`README.md`: "Windows 11 24H2 (build 26100.2605) and above". Nota explícita de que Windows 10 não é mais suportado.
+`README.md`: "Windows 11 24H2 (build 26100.2605) and above", com nota de que Windows 10 não é mais suportado.
 
 - [ ] **Step 2: Document the model**
 
 Em `docs/design.md` e nos docs de uso: lista global de desktops, sem workspaces por monitor, `new-workspace`/`ensure-workspaces` como no-op, janela nova fica no desktop de origem, `swap-workspaces-with-monitor` removido.
 
-- [ ] **Step 3: Regenerate and commit schemas**
+- [ ] **Step 3: Regenerate the schemas**
 
-Regenerar `schema.json` e `schema.bar.json` com o alvo do repo (o mesmo usado no release), sem mudanças manuais.
+Rodar o alvo de geração de schema do repo e conferir que `schema.json`/`schema.bar.json` só mudam nos campos removidos (`current_virtual_desktop_id`, `virtual_desktop_id`).
 
 - [ ] **Step 4: Commit**
 
@@ -654,7 +879,8 @@ git commit -m "docs: document native desktop workspaces"
 ## Dependências
 
 - 1 → 2 → 3 bloqueiam todas as outras.
-- 4–7 dependem de 3.
-- 8–9 dependem de 4.
-- 10–11 dependem de 6.
-- 12 é a última.
+- 4, 5, 6, 7 dependem de 3.
+- 8, 9 dependem de 4.
+- 10, 11, 12 dependem de 5.
+- 13, 14 dependem de 6 e 10.
+- 15 é a última.
