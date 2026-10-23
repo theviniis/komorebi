@@ -63,6 +63,7 @@ use crate::should_act_individual;
 use crate::state::State;
 use crate::static_config::StaticConfig;
 use crate::transparency_manager;
+use crate::virtual_desktop;
 use crate::window::Window;
 use crate::window_manager_event::WindowManagerEvent;
 use crate::windows_api::WindowsApi;
@@ -94,6 +95,16 @@ pub struct WindowManager {
     pub uncloack_to_ignore: usize,
     /// Maps each known window hwnd to the (monitor, workspace) index pair managing it
     pub known_hwnds: HashMap<isize, (usize, usize)>,
+    /// The index of the currently focused native desktop (global across all monitors).
+    ///
+    /// Invariant: every monitor has `workspaces().len() == desktop_count`, and
+    /// every monitor's `focused_workspace_idx()` equals `focused_desktop_idx`.
+    pub focused_desktop_idx: usize,
+    /// The total number of native virtual desktops, as reported by the desktop backend.
+    ///
+    /// Invariant: every monitor has `workspaces().len() == desktop_count`, and
+    /// every monitor's `focused_workspace_idx()` equals `focused_desktop_idx`.
+    pub desktop_count: usize,
 }
 
 impl AsRef<Self> for WindowManager {
@@ -171,6 +182,8 @@ impl WindowManager {
             already_moved_window_handles: Arc::new(Mutex::new(HashSet::new())),
             uncloack_to_ignore: 0,
             known_hwnds: HashMap::new(),
+            focused_desktop_idx: 0,
+            desktop_count: 1,
         })
     }
 
@@ -3752,32 +3765,35 @@ impl WindowManager {
     }
 
     pub fn focused_workspace_idx(&self) -> eyre::Result<usize> {
-        Ok(self
-            .focused_monitor()
-            .ok_or_eyre("there is no monitor")?
-            .focused_workspace_idx())
+        // Route through the global index; no per-monitor Ring is consulted.
+        Ok(self.focused_desktop_idx)
     }
 
     pub fn focused_workspace(&self) -> eyre::Result<&Workspace> {
+        let idx = self.focused_desktop_idx;
         self.focused_monitor()
             .ok_or_eyre("there is no monitor")?
-            .focused_workspace()
+            .workspaces()
+            .get(idx)
             .ok_or_eyre("there is no workspace")
     }
 
     pub fn focused_workspace_mut(&mut self) -> eyre::Result<&mut Workspace> {
+        let idx = self.focused_desktop_idx;
         self.focused_monitor_mut()
             .ok_or_eyre("there is no monitor")?
-            .focused_workspace_mut()
+            .workspaces_mut()
+            .get_mut(idx)
             .ok_or_eyre("there is no workspace")
     }
 
     pub fn focused_workspace_idx_for_monitor_idx(&self, idx: usize) -> eyre::Result<usize> {
-        Ok(self
-            .monitors()
+        // All monitors share the same focused index (the global one).
+        // Validate that the monitor exists but ignore its per-Ring index.
+        self.monitors()
             .get(idx)
-            .ok_or_eyre("there is no monitor at this index")?
-            .focused_workspace_idx())
+            .ok_or_eyre("there is no monitor at this index")?;
+        Ok(self.focused_desktop_idx)
     }
 
     pub fn focused_workspace_for_monitor_idx(&self, idx: usize) -> eyre::Result<&Workspace> {
@@ -3799,6 +3815,35 @@ impl WindowManager {
             .ok_or_eyre("there is no workspace")
     }
 
+    /// Query the desktop backend for the current native desktop count and resize
+    /// every monitor's workspace list to match.
+    ///
+    /// After this call the following invariant holds:
+    ///   **Every monitor has `workspaces().len() == desktop_count`, and
+    ///   every monitor's `focused_workspace_idx()` equals `focused_desktop_idx`.**
+    pub fn sync_desktop_count(&mut self) -> eyre::Result<()> {
+        let count = virtual_desktop::backend().desktop_count()?;
+        let count = count.max(1);
+
+        for monitor in self.monitors_mut() {
+            monitor.sync_workspace_count(count);
+        }
+
+        self.desktop_count = count;
+        // Clamp focused index in case the desktop count shrank.
+        self.focused_desktop_idx = self.focused_desktop_idx.min(count.saturating_sub(1));
+
+        // Keep every monitor's Ring focused index in sync with the global index
+        // so that code that calls monitor.focused_workspace() directly remains
+        // coherent.
+        let global_idx = self.focused_desktop_idx;
+        for monitor in self.monitors_mut() {
+            monitor.set_focused_workspace_idx(global_idx);
+        }
+
+        Ok(())
+    }
+
     #[tracing::instrument(skip(self))]
     pub fn focus_workspace(&mut self, idx: usize) -> eyre::Result<()> {
         tracing::info!("focusing workspace");
@@ -3810,6 +3855,10 @@ impl WindowManager {
 
         monitor.focus_workspace(idx)?;
         monitor.load_focused_workspace(mouse_follows_focus)?;
+
+        // Keep the global focused-desktop index in sync so that
+        // focused_workspace_idx() / focused_workspace() remain coherent.
+        self.focused_desktop_idx = idx;
 
         self.update_focused_workspace(false, true)
     }
@@ -3941,6 +3990,8 @@ impl WindowManager {
 mod tests {
     use super::*;
     use crate::monitor;
+    use crate::virtual_desktop;
+    use crate::virtual_desktop::testing::FakeDesktopBackend;
     use crossbeam_channel::Sender;
     use crossbeam_channel::bounded;
     use std::path::PathBuf;
@@ -3981,6 +4032,37 @@ mod tests {
         )
     }
 
+    /// Create a `WindowManager` backed by a `FakeDesktopBackend` with `count`
+    /// desktops, add one test monitor, and call `sync_desktop_count` so the
+    /// workspace lists and global index are already in a consistent state.
+    ///
+    /// The returned `Arc<FakeDesktopBackend>` keeps the fake installed for the
+    /// lifetime of the test; the backend is uninstalled when it is dropped.
+    fn setup_window_manager_with_fake_desktops(
+        count: usize,
+    ) -> (WindowManager, Arc<FakeDesktopBackend>) {
+        let fake = Arc::new(FakeDesktopBackend::new(count));
+        virtual_desktop::set_backend(Some(fake.clone() as Arc<dyn virtual_desktop::DesktopBackend>));
+
+        let (mut wm, _ctx) = setup_window_manager();
+
+        // Add one test monitor so sync_desktop_count has something to resize.
+        let m = monitor::new(
+            0,
+            crate::core::Rect::default(),
+            crate::core::Rect::default(),
+            "FakeMonitor".to_string(),
+            "FakeDevice".to_string(),
+            "FakeDeviceID".to_string(),
+            Some("FakeSN".to_string()),
+        );
+        wm.monitors_mut().push_back(m);
+
+        wm.sync_desktop_count().unwrap();
+
+        (wm, fake)
+    }
+
     #[test]
     fn test_create_window_manager() {
         let (_wm, _test_context) = setup_window_manager();
@@ -4015,8 +4097,10 @@ mod tests {
             let monitor = wm.focused_monitor_mut().unwrap();
             monitor.focus_workspace(new_workspace_index).unwrap();
             assert_eq!(monitor.workspaces().len(), 2);
+            // Check the per-monitor ring (focus_workspace was called directly on monitor,
+            // not through wm, so the global wm.focused_desktop_idx is not updated here).
+            assert_eq!(monitor.focused_workspace_idx(), 1);
         }
-        assert_eq!(wm.focused_workspace_idx().unwrap(), 1);
 
         {
             // focusing a workspace many indices ahead should create all workspaces
@@ -4024,8 +4108,8 @@ mod tests {
             let monitor = wm.focused_monitor_mut().unwrap();
             monitor.focus_workspace(new_workspace_index + 2).unwrap();
             assert_eq!(monitor.workspaces().len(), 4);
+            assert_eq!(monitor.focused_workspace_idx(), 3);
         }
-        assert_eq!(wm.focused_workspace_idx().unwrap(), 3);
 
         // we should be able to successfully focus an existing workspace too
         wm.focus_workspace(0).unwrap();
@@ -4112,8 +4196,9 @@ mod tests {
             let monitor = wm.focused_monitor_mut().unwrap();
             monitor.focus_workspace(new_workspace_index).unwrap();
             assert_eq!(monitor.workspaces().len(), 2);
+            // Verify the per-monitor ring index (called directly on monitor).
+            assert_eq!(monitor.focused_workspace_idx(), 1);
         }
-        assert_eq!(wm.focused_workspace_idx().unwrap(), 1);
 
         // set the name of the first workspace
         wm.set_workspace_name(0, 0, "workspace1".to_string())
@@ -5965,5 +6050,15 @@ mod tests {
         assert_eq!(op.target_monitor_idx, target_monitor_idx); // 2
         assert_eq!(op.target_workspace_idx, target_workspace_idx); // 3
         assert_eq!(op.floating, floating); // false
+    }
+
+    #[test]
+    fn sync_desktop_count_keeps_monitors_uniform() {
+        let (mut wm, _fake) = setup_window_manager_with_fake_desktops(3);
+        wm.sync_desktop_count().unwrap();
+        assert_eq!(wm.desktop_count, 3);
+        for m in wm.monitors() {
+            assert_eq!(m.workspaces().len(), 3);
+        }
     }
 }

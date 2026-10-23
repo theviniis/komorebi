@@ -3,8 +3,8 @@ use std::collections::VecDeque;
 use std::sync::atomic::Ordering;
 
 use color_eyre::eyre;
-use color_eyre::eyre::OptionExt;
 use color_eyre::eyre::bail;
+use color_eyre::eyre::OptionExt;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -13,19 +13,19 @@ use crate::border_manager::BORDER_OFFSET;
 use crate::border_manager::BORDER_WIDTH;
 use crate::core::Rect;
 
-use crate::DEFAULT_CONTAINER_PADDING;
-use crate::DEFAULT_WORKSPACE_PADDING;
+use crate::container::Container;
+use crate::ring::Ring;
+use crate::workspace::Workspace;
+use crate::workspace::WorkspaceGlobals;
+use crate::workspace::WorkspaceLayer;
 use crate::DefaultLayout;
 use crate::FloatingLayerBehaviour;
 use crate::Layout;
 use crate::OperationDirection;
 use crate::Wallpaper;
 use crate::WindowsApi;
-use crate::container::Container;
-use crate::ring::Ring;
-use crate::workspace::Workspace;
-use crate::workspace::WorkspaceGlobals;
-use crate::workspace::WorkspaceLayer;
+use crate::DEFAULT_CONTAINER_PADDING;
+use crate::DEFAULT_WORKSPACE_PADDING;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -374,6 +374,27 @@ impl Monitor {
             self.workspaces_mut()
                 .resize(ensure_count, Workspace::default());
         }
+    }
+
+    /// Resize the workspace list to exactly `count` (grow or shrink).
+    ///
+    /// A minimum of 1 workspace is always kept.  The focused index inside the
+    /// Ring is NOT changed here; the caller (`WindowManager::sync_desktop_count`)
+    /// is responsible for calling `set_focused_workspace_idx` afterwards so the
+    /// invariant holds:
+    ///
+    ///   **Every monitor has `workspaces().len() == desktop_count`, and
+    ///   every monitor's `focused_workspace_idx()` equals the global
+    ///   `WindowManager::focused_desktop_idx`.**
+    pub fn sync_workspace_count(&mut self, count: usize) {
+        self.workspaces_mut()
+            .resize(count.max(1), Workspace::default());
+    }
+
+    /// Set the Ring's focused index so that `focused_workspace_idx()` reflects
+    /// the global `WindowManager::focused_desktop_idx`.
+    pub fn set_focused_workspace_idx(&mut self, idx: usize) {
+        self.workspaces.focus(idx);
     }
 
     pub fn remove_workspaces(&mut self) -> VecDeque<Workspace> {
@@ -818,5 +839,40 @@ mod tests {
         // Try to call the ensure workspace count again to ensure it doesn't change
         m.ensure_workspace_count(3);
         assert_eq!(m.workspaces().len(), 5, "Monitor should have 5 workspaces");
+    }
+
+    #[test]
+    fn sync_workspace_count_grows_and_shrinks_keeping_index_zero() {
+        let mut m = Monitor::new(
+            0,
+            Rect::default(),
+            Rect::default(),
+            "M".into(),
+            "D".into(),
+            "DID".into(),
+            Some("SN".into()),
+        );
+        m.sync_workspace_count(3);
+        assert_eq!(m.workspaces().len(), 3);
+        m.sync_workspace_count(1);
+        assert_eq!(m.workspaces().len(), 1);
+        m.sync_workspace_count(1);
+        assert_eq!(m.workspaces().len(), 1);
+    }
+
+    #[test]
+    fn set_focused_workspace_idx_updates_the_monitor_ring() {
+        let mut m = Monitor::new(
+            0,
+            Rect::default(),
+            Rect::default(),
+            "M".into(),
+            "D".into(),
+            "DID".into(),
+            Some("SN".into()),
+        );
+        m.sync_workspace_count(3);
+        m.set_focused_workspace_idx(2);
+        assert_eq!(m.focused_workspace_idx(), 2);
     }
 }
