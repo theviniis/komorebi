@@ -346,6 +346,31 @@ pub mod testing {
             Ok(())
         }
     }
+
+    /// Restores the previous backend when dropped, so a failed assertion
+    /// cannot leave a fake installed for other tests.
+    pub struct InstalledBackendGuard {
+        previous: Option<Arc<dyn DesktopBackend>>,
+    }
+
+    impl InstalledBackendGuard {
+        pub fn new() -> Self {
+            let previous = installed_backend().lock().clone();
+            Self { previous }
+        }
+    }
+
+    impl Drop for InstalledBackendGuard {
+        fn drop(&mut self) {
+            *installed_backend().lock() = self.previous.clone();
+        }
+    }
+
+    impl Default for InstalledBackendGuard {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
 }
 
 #[cfg(test)]

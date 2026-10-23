@@ -2475,6 +2475,9 @@ mod tests {
         
         // Sync desktop count to create the workspaces
         wm.sync_desktop_count().unwrap();
+        
+        // Keep the fake backend installed for the duration of the test
+        let _guard = crate::virtual_desktop::testing::InstalledBackendGuard::new();
 
         // send a message
         send_socket_message(&socket_path, SocketMessage::FocusWorkspaceNumber(5));

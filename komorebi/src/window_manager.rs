@@ -4060,10 +4060,10 @@ mod tests {
     /// workspace lists and global index are already in a consistent state.
     ///
     /// The returned `Arc<FakeDesktopBackend>` keeps the fake installed for the
-    /// lifetime of the test; the backend is uninstalled when it is dropped.
+    /// lifetime of the test; the backend is uninstalled when the guard is dropped.
     fn setup_window_manager_with_fake_desktops(
         count: usize,
-    ) -> (WindowManager, Arc<FakeDesktopBackend>) {
+    ) -> (WindowManager, Arc<FakeDesktopBackend>, crate::virtual_desktop::testing::InstalledBackendGuard) {
         let fake = Arc::new(FakeDesktopBackend::new(count));
         virtual_desktop::set_backend(Some(fake.clone() as Arc<dyn virtual_desktop::DesktopBackend>));
 
@@ -4083,7 +4083,10 @@ mod tests {
 
         wm.sync_desktop_count().unwrap();
 
-        (wm, fake)
+        // Ensure the fake backend is restored to the previous one after the test
+        let guard = crate::virtual_desktop::testing::InstalledBackendGuard::new();
+
+        (wm, fake, guard)
     }
 
     #[test]
@@ -6077,7 +6080,7 @@ mod tests {
 
     #[test]
     fn sync_desktop_count_keeps_monitors_uniform() {
-        let (mut wm, _fake) = setup_window_manager_with_fake_desktops(3);
+        let (mut wm, _fake, _guard) = setup_window_manager_with_fake_desktops(3);
         wm.sync_desktop_count().unwrap();
         assert_eq!(wm.desktop_count, 3);
         for m in wm.monitors() {
@@ -6087,7 +6090,7 @@ mod tests {
 
     #[test]
     fn focus_desktop_moves_every_monitor_to_the_same_index() {
-        let (mut wm, fake) = setup_window_manager_with_fake_desktops(3);
+        let (mut wm, fake, _guard) = setup_window_manager_with_fake_desktops(3);
         wm.focus_desktop(2).unwrap();
         assert_eq!(wm.focused_desktop_idx, 2);
         assert_eq!(fake.switch_calls(), 1);
@@ -6099,7 +6102,7 @@ mod tests {
 
     #[test]
     fn focus_desktop_rejects_out_of_range_index() {
-        let (mut wm, fake) = setup_window_manager_with_fake_desktops(3);
+        let (mut wm, fake, _guard) = setup_window_manager_with_fake_desktops(3);
         assert!(wm.focus_desktop(3).is_err());
         assert_eq!(fake.switch_calls(), 0);
     }
