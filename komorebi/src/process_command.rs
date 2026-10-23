@@ -1228,7 +1228,7 @@ impl WindowManager {
                 }
 
                 if self.focused_workspace_idx().unwrap_or_default() != workspace_idx {
-                    self.focus_workspace(workspace_idx)?;
+                    self.focus_desktop(workspace_idx)?;
                 }
             }
             SocketMessage::FocusWorkspaceNumbers(workspace_idx) => {
@@ -1244,16 +1244,9 @@ impl WindowManager {
                     self.focus_monitor(monitor_idx)?;
                 }
 
-                let focused_monitor_idx = self.focused_monitor_idx();
-
-                for (i, monitor) in self.monitors_mut().iter_mut().enumerate() {
-                    if i != focused_monitor_idx {
-                        monitor.focus_workspace(workspace_idx)?;
-                        monitor.load_focused_workspace(false)?;
-                    }
-                }
-
-                self.focus_workspace(workspace_idx)?;
+                // In the native desktop model, focus_desktop already affects all monitors,
+                // so no per-monitor loop is needed.
+                self.focus_desktop(workspace_idx)?;
             }
             SocketMessage::FocusMonitorWorkspaceNumber(monitor_idx, workspace_idx) => {
                 let focused_monitor_idx = self.focused_monitor_idx();
@@ -1263,7 +1256,7 @@ impl WindowManager {
 
                 if focused_pair != (monitor_idx, workspace_idx) {
                     self.focus_monitor(monitor_idx)?;
-                    self.focus_workspace(workspace_idx)?;
+                    self.focus_desktop(workspace_idx)?;
                 }
             }
             SocketMessage::FocusNamedWorkspace(ref name) => {
@@ -2455,11 +2448,19 @@ mod tests {
 
     #[test]
     fn test_receive_socket_message() {
+        use crate::virtual_desktop::testing::FakeDesktopBackend;
+        use std::sync::Arc;
+
         let (_sender, receiver): (Sender<WindowManagerEvent>, Receiver<WindowManagerEvent>) =
             bounded(1);
         let socket_name = format!("komorebi-test-{}.sock", Uuid::new_v4());
         let socket_path = PathBuf::from(&socket_name);
         let mut wm = WindowManager::new(receiver, Some(socket_path.clone())).unwrap();
+        
+        // Set up fake desktop backend with 6 desktops so index 5 is valid
+        let fake = Arc::new(FakeDesktopBackend::new(6));
+        crate::virtual_desktop::set_backend(Some(fake.clone() as Arc<dyn crate::virtual_desktop::DesktopBackend>));
+        
         let m = monitor::new(
             0,
             Rect::default(),
@@ -2471,6 +2472,9 @@ mod tests {
         );
 
         wm.monitors_mut().push_back(m);
+        
+        // Sync desktop count to create the workspaces
+        wm.sync_desktop_count().unwrap();
 
         // send a message
         send_socket_message(&socket_path, SocketMessage::FocusWorkspaceNumber(5));

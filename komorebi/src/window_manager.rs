@@ -3844,23 +3844,46 @@ impl WindowManager {
         Ok(())
     }
 
+    /// Switch to a native virtual desktop by index, affecting all monitors.
+    ///
+    /// This validates the index, calls the desktop backend to perform the OS-level
+    /// switch, updates the global focused_desktop_idx, and synchronizes all monitors'
+    /// Ring indices so that `monitor.focused_workspace_idx()` remains coherent.
     #[tracing::instrument(skip(self))]
-    pub fn focus_workspace(&mut self, idx: usize) -> eyre::Result<()> {
-        tracing::info!("focusing workspace");
+    pub fn focus_desktop(&mut self, idx: usize) -> eyre::Result<()> {
+        tracing::info!("focusing desktop");
 
-        let mouse_follows_focus = self.mouse_follows_focus;
-        let monitor = self
-            .focused_monitor_mut()
-            .ok_or_eyre("there is no workspace")?;
+        // Validate index is within bounds
+        if idx >= self.desktop_count {
+            bail!(
+                "desktop index {} is out of range (desktop_count: {})",
+                idx,
+                self.desktop_count
+            );
+        }
 
-        monitor.focus_workspace(idx)?;
-        monitor.load_focused_workspace(mouse_follows_focus)?;
+        // Switch the native desktop via the backend
+        virtual_desktop::backend().switch_desktop(idx)?;
 
-        // Keep the global focused-desktop index in sync so that
-        // focused_workspace_idx() / focused_workspace() remain coherent.
+        // Update global focused index
         self.focused_desktop_idx = idx;
 
+        // Synchronize all monitors' Ring indices to match the global index
+        for monitor in self.monitors_mut() {
+            monitor.set_focused_workspace_idx(idx);
+        }
+
+        // Update focused workspace state
         self.update_focused_workspace(false, true)
+    }
+
+    /// Alias for `focus_desktop` to maintain compatibility with existing code.
+    ///
+    /// In the native-desktop model, "workspace" and "desktop" are synonymous—
+    /// all monitors share a single global desktop index.
+    #[tracing::instrument(skip(self))]
+    pub fn focus_workspace(&mut self, idx: usize) -> eyre::Result<()> {
+        self.focus_desktop(idx)
     }
 
     #[tracing::instrument(skip(self))]
@@ -6060,5 +6083,24 @@ mod tests {
         for m in wm.monitors() {
             assert_eq!(m.workspaces().len(), 3);
         }
+    }
+
+    #[test]
+    fn focus_desktop_moves_every_monitor_to_the_same_index() {
+        let (mut wm, fake) = setup_window_manager_with_fake_desktops(3);
+        wm.focus_desktop(2).unwrap();
+        assert_eq!(wm.focused_desktop_idx, 2);
+        assert_eq!(fake.switch_calls(), 1);
+        for m in wm.monitors() {
+            assert_eq!(m.focused_workspace_idx(), 2);
+            assert_eq!(m.workspaces().len(), 3);
+        }
+    }
+
+    #[test]
+    fn focus_desktop_rejects_out_of_range_index() {
+        let (mut wm, fake) = setup_window_manager_with_fake_desktops(3);
+        assert!(wm.focus_desktop(3).is_err());
+        assert_eq!(fake.switch_calls(), 0);
     }
 }
