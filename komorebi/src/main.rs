@@ -320,7 +320,9 @@ fn main() -> eyre::Result<()> {
 
     if !opts.clean_state && dumped_state.is_file() {
         if let Ok(state) = serde_json::from_str(&std::fs::read_to_string(&dumped_state)?) {
-            wm.lock().apply_state(state);
+            if let Err(error) = wm.lock().apply_state(state) {
+                tracing::warn!("cannot apply state from {}: {}", dumped_state.display(), error);
+            }
         } else {
             tracing::warn!(
                 "cannot apply state from {}; state struct is not up to date",

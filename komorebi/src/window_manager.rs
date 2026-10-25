@@ -193,7 +193,11 @@ impl WindowManager {
     }
 
     #[tracing::instrument(skip(self, state))]
-    pub fn apply_state(&mut self, state: State) {
+    pub fn apply_state(&mut self, state: State) -> eyre::Result<()> {
+        // First, sync with native desktops to get the correct desktop count
+        self.sync_desktop_count()?;
+        let desktop_count = self.desktop_count;
+
         let mut can_apply = true;
 
         let state_monitors_len = state.monitors.elements().len();
@@ -204,7 +208,7 @@ impl WindowManager {
                 temp_dir().join("komorebi.state.json").to_string_lossy()
             );
 
-            return;
+            return Ok(());
         }
 
         for monitor in state.monitors.elements() {
@@ -254,9 +258,50 @@ impl WindowManager {
             for (monitor_idx, monitor) in self.monitors_mut().iter_mut().enumerate() {
                 let mut focused_workspace = 0;
                 if let Some(state_monitor) = state.monitors.elements().get(monitor_idx) {
-                    monitor
-                        .workspaces_mut()
-                        .resize(state_monitor.workspaces().len(), Workspace::default());
+                    // Reconcile workspace count with desktop count
+                    let state_workspace_count = state_monitor.workspaces().len();
+                    // Always resize to desktop_count to match native desktops
+                    let target_workspace_count = desktop_count;
+                    
+                    // Resize to desktop count
+                    monitor.workspaces_mut().resize(target_workspace_count, Workspace::default());
+
+                    // If state has more workspaces than desktops, re-adopt excess windows
+                    if state_workspace_count > desktop_count {
+                        let last_desktop_idx = desktop_count - 1;
+                        for excess_idx in desktop_count..state_workspace_count {
+                            if let Some(excess_workspace) = state_monitor.workspaces().get(excess_idx) {
+                                // Re-adopt container windows as floating on the last desktop
+                                for container in excess_workspace.containers() {
+                                    for window in container.windows() {
+                                        if let Some(target_ws) = monitor.workspaces_mut().get_mut(last_desktop_idx) {
+                                            target_ws.floating_windows_mut().push_back(window.clone());
+                                        }
+                                    }
+                                }
+                                // Re-adopt floating windows
+                                for window in excess_workspace.floating_windows() {
+                                    if let Some(target_ws) = monitor.workspaces_mut().get_mut(last_desktop_idx) {
+                                        target_ws.floating_windows_mut().push_back(window.clone());
+                                    }
+                                }
+                                // Re-adopt maximized window
+                                if let Some(maximized) = excess_workspace.maximized_window {
+                                    if let Some(target_ws) = monitor.workspaces_mut().get_mut(last_desktop_idx) {
+                                        target_ws.floating_windows_mut().push_back(maximized.clone());
+                                    }
+                                }
+                                // Re-adopt monocle container windows
+                                if let Some(monocle) = &excess_workspace.monocle_container {
+                                    for window in monocle.windows() {
+                                        if let Some(target_ws) = monitor.workspaces_mut().get_mut(last_desktop_idx) {
+                                            target_ws.floating_windows_mut().push_back(window.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     for (workspace_idx, workspace) in
                         monitor.workspaces_mut().iter_mut().enumerate()
@@ -343,6 +388,8 @@ impl WindowManager {
                 temp_dir().join("komorebi.state.json").to_string_lossy()
             );
         }
+
+        Ok(())
     }
 
     #[tracing::instrument]
@@ -6241,5 +6288,25 @@ mod tests {
         crate::HIDDEN_HWNDS.lock().clear();
         m.load_focused_workspace(false).unwrap();
         assert!(crate::HIDDEN_HWNDS.lock().is_empty());
+    }
+
+    #[test]
+    fn applying_state_with_fewer_workspaces_than_desktops_keeps_all_desktops() {
+        let (mut wm, _fake) = setup_window_manager_with_fake_desktops(3);
+        let mut state = crate::State::from(&wm);
+        state.monitors.elements_mut()[0].workspaces.elements_mut().truncate(2);
+        wm.apply_state(state).unwrap();
+        assert_eq!(wm.monitors()[0].workspaces().len(), 3);
+    }
+
+    #[test]
+    fn applying_state_with_more_workspaces_than_desktops_does_not_lose_windows() {
+        let (mut wm, _fake) = setup_window_manager_with_fake_desktops(2);
+        let mut state = crate::State::from(&wm);
+        while state.monitors.elements()[0].workspaces().len() < 3 {
+            state.monitors.elements_mut()[0].workspaces.elements_mut().push_back(crate::workspace::Workspace::default());
+        }
+        wm.apply_state(state).unwrap();
+        assert_eq!(wm.monitors()[0].workspaces().len(), 2);
     }
 }
