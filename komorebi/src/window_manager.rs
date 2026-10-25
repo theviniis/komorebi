@@ -6106,4 +6106,22 @@ mod tests {
         assert!(wm.focus_desktop(3).is_err());
         assert_eq!(fake.switch_calls(), 0);
     }
+
+    #[test]
+    fn desktop_changed_updates_index_without_switching_back() {
+        let (mut wm, fake, _guard) = setup_window_manager_with_fake_desktops(3);
+        wm.process_event(WindowManagerEvent::DesktopChanged { new: 1, old: 0 }).unwrap();
+        assert_eq!(wm.focused_desktop_idx, 1);
+        assert_eq!(fake.switch_calls(), 0);
+    }
+
+    #[test]
+    fn desktop_moved_permutes_workspaces_on_every_monitor() {
+        let (mut wm, _fake, _guard) = setup_window_manager_with_fake_desktops(3);
+        wm.process_event(WindowManagerEvent::DesktopMoved { desktop: 0, old: 0, new: 2 }).unwrap();
+        for m in wm.monitors() {
+            assert_eq!(m.workspaces().len(), 3);
+        }
+        assert_eq!(wm.focused_desktop_idx, 2);
+    }
 }

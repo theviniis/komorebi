@@ -25,6 +25,7 @@ pub mod theme_manager;
 pub mod transparency_manager;
 pub mod version_gate;
 pub mod virtual_desktop;
+pub mod desktop_listener;
 pub mod window;
 pub mod window_manager;
 pub mod window_manager_event;

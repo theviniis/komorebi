@@ -148,6 +148,61 @@ impl WindowManager {
             return Ok(());
         }
 
+        // Handle desktop events first — they are global and don't require a managed window
+        match event {
+            WindowManagerEvent::DesktopChanged { new, old } => {
+                tracing::info!("desktop changed: {} -> {}", old, new);
+                self.focused_desktop_idx = new;
+                // Sync all monitors' Ring indices to match the global index
+                for monitor in self.monitors_mut() {
+                    monitor.set_focused_workspace_idx(new);
+                }
+                self.update_focused_workspace(false, true)?;
+                return Ok(());
+            }
+            WindowManagerEvent::DesktopCountChanged => {
+                tracing::info!("desktop count changed");
+                self.sync_desktop_count()?;
+                self.update_focused_workspace(false, true)?;
+                return Ok(());
+            }
+            WindowManagerEvent::DesktopMoved { desktop: _, old, new } => {
+                tracing::info!("desktop moved: old {} -> new {}", old, new);
+                // Move the workspace from old to new on each monitor
+                for monitor in self.monitors_mut() {
+                    let workspaces = monitor.workspaces_mut();
+                    if old < workspaces.len() && new <= workspaces.len() {
+                        let ws = workspaces.remove(old).unwrap_or_default();
+                        workspaces.insert(new, ws);
+                    }
+                }
+                // If the focused desktop was the one that moved, update the index
+                let focused_idx = self.focused_desktop_idx;
+                if focused_idx == old {
+                    self.focused_desktop_idx = new;
+                }
+                // Sync all monitors' Ring indices
+                let target_idx = self.focused_desktop_idx;
+                for monitor in self.monitors_mut() {
+                    monitor.set_focused_workspace_idx(target_idx);
+                }
+                self.update_focused_workspace(false, true)?;
+                return Ok(());
+            }
+            WindowManagerEvent::DesktopRenamed { desktop } => {
+                tracing::info!("desktop renamed: {}", desktop);
+                if let Ok(Some(name)) = crate::virtual_desktop::backend().desktop_name(desktop) {
+                    for monitor in self.monitors_mut() {
+                        if let Some(ws) = monitor.workspaces_mut().get_mut(desktop) {
+                            ws.name = Some(name.clone());
+                        }
+                    }
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
+
         let mut rule_debug = RuleDebug::default();
 
         let should_manage = event.window().should_manage(Some(event), &mut rule_debug)?;
@@ -897,7 +952,11 @@ impl WindowManager {
             }
             WindowManagerEvent::MouseCapture(..)
             | WindowManagerEvent::Cloak(..)
-            | WindowManagerEvent::TitleUpdate(..) => {}
+            | WindowManagerEvent::TitleUpdate(..)
+            | WindowManagerEvent::DesktopChanged { .. }
+            | WindowManagerEvent::DesktopCountChanged
+            | WindowManagerEvent::DesktopMoved { .. }
+            | WindowManagerEvent::DesktopRenamed { .. } => {}
         };
 
         // If we unmanaged a window, it shouldn't be immediately hidden behind managed windows
