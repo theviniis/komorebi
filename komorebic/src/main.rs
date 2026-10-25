@@ -1242,7 +1242,7 @@ enum SubCommand {
     #[clap(arg_required_else_help = true)]
     CycleMoveWorkspaceToMonitor(CycleMoveWorkspaceToMonitor),
     /// Swap focused monitor workspaces with specified monitor
-    #[clap(arg_required_else_help = true)]
+    #[clap(arg_required_else_help = true, hide = true)]
     SwapWorkspacesWithMonitor(SwapWorkspacesWithMonitor),
     /// Create and append a new workspace on the focused monitor
     NewWorkspace,

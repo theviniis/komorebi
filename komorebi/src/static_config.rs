@@ -1379,6 +1379,7 @@ impl StaticConfig {
             known_hwnds: HashMap::new(),
             focused_desktop_idx: 0,
             desktop_count: 1,
+            workspace_names: HashMap::new(),
         };
 
         #[allow(deprecated)]

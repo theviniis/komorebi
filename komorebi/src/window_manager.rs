@@ -105,6 +105,9 @@ pub struct WindowManager {
     /// Invariant: every monitor has `workspaces().len() == desktop_count`, and
     /// every monitor's `focused_workspace_idx()` equals `focused_desktop_idx`.
     pub desktop_count: usize,
+    /// Global workspace names (synced with native desktop names).
+    /// Key is the workspace/desktop index, value is the name.
+    pub workspace_names: HashMap<usize, String>,
 }
 
 impl AsRef<Self> for WindowManager {
@@ -184,6 +187,7 @@ impl WindowManager {
             known_hwnds: HashMap::new(),
             focused_desktop_idx: 0,
             desktop_count: 1,
+            workspace_names: HashMap::new(),
         })
     }
 
@@ -3586,42 +3590,20 @@ impl WindowManager {
     #[tracing::instrument(skip(self))]
     pub fn ensure_workspaces_for_monitor(
         &mut self,
-        monitor_idx: usize,
-        workspace_count: usize,
+        _monitor_idx: usize,
+        _workspace_count: usize,
     ) -> eyre::Result<()> {
-        tracing::info!("ensuring workspace count");
-
-        let monitor = self
-            .monitors_mut()
-            .get_mut(monitor_idx)
-            .ok_or_eyre("there is no monitor")?;
-
-        monitor.ensure_workspace_count(workspace_count);
-
+        tracing::warn!("ensure_workspaces_for_monitor is a no-op: desktops are managed by Task View");
         Ok(())
     }
 
     #[tracing::instrument(skip(self))]
     pub fn ensure_named_workspaces_for_monitor(
         &mut self,
-        monitor_idx: usize,
-        names: &Vec<String>,
+        _monitor_idx: usize,
+        _names: &Vec<String>,
     ) -> eyre::Result<()> {
-        tracing::info!("ensuring workspace count");
-
-        let monitor = self
-            .monitors_mut()
-            .get_mut(monitor_idx)
-            .ok_or_eyre("there is no monitor")?;
-
-        monitor.ensure_workspace_count(names.len());
-
-        for (workspace_idx, name) in names.iter().enumerate() {
-            if let Some(workspace) = monitor.workspaces_mut().get_mut(workspace_idx) {
-                workspace.name = Option::from(name.clone());
-            }
-        }
-
+        tracing::warn!("ensure_named_workspaces_for_monitor is a no-op: desktops are managed by Task View");
         Ok(())
     }
 
@@ -3658,18 +3640,20 @@ impl WindowManager {
     ) -> eyre::Result<()> {
         tracing::info!("setting workspace name");
 
-        let monitor = self
-            .monitors_mut()
-            .get_mut(monitor_idx)
-            .ok_or_eyre("there is no monitor")?;
+        // Write to native desktop backend
+        crate::virtual_desktop::backend().set_desktop_name(workspace_idx, &name)?;
 
-        let workspace = monitor
-            .workspaces_mut()
-            .get_mut(workspace_idx)
-            .ok_or_eyre("there is no monitor")?;
+        // Store globally
+        self.workspace_names.insert(workspace_idx, name.clone());
 
-        workspace.name = Option::from(name.clone());
-        monitor.workspace_names.insert(workspace_idx, name);
+        // Update all monitors' workspaces
+        for monitor in self.monitors_mut() {
+            if let Some(workspace) = monitor.workspaces_mut().get_mut(workspace_idx) {
+                workspace.name = Option::from(name.clone());
+            }
+            // Also update the monitor's workspace_names for compatibility
+            monitor.workspace_names.insert(workspace_idx, name.clone());
+        }
 
         Ok(())
     }
@@ -3840,6 +3824,19 @@ impl WindowManager {
         // Clamp focused index in case the desktop count shrank.
         self.focused_desktop_idx = self.focused_desktop_idx.min(count.saturating_sub(1));
 
+        // Load workspace names from the native desktop backend
+        for i in 0..count {
+            if let Ok(Some(name)) = crate::virtual_desktop::backend().desktop_name(i) {
+                self.workspace_names.insert(i, name.clone());
+                for monitor in self.monitors_mut() {
+                    if let Some(workspace) = monitor.workspaces_mut().get_mut(i) {
+                        workspace.name = Option::from(name.clone());
+                    }
+                    monitor.workspace_names.insert(i, name.clone());
+                }
+            }
+        }
+
         // Keep every monitor's Ring focused index in sync with the global index
         // so that code that calls monitor.focused_workspace() directly remains
         // coherent.
@@ -3924,17 +3921,8 @@ impl WindowManager {
 
     #[tracing::instrument(skip(self))]
     pub fn new_workspace(&mut self) -> eyre::Result<()> {
-        tracing::info!("adding new workspace");
-
-        let mouse_follows_focus = self.mouse_follows_focus;
-        let monitor = self
-            .focused_monitor_mut()
-            .ok_or_eyre("there is no workspace")?;
-
-        monitor.focus_workspace(monitor.new_workspace_idx())?;
-        monitor.load_focused_workspace(mouse_follows_focus)?;
-
-        self.update_focused_workspace(self.mouse_follows_focus, false)
+        tracing::warn!("new_workspace is a no-op: desktops are managed by Task View");
+        Ok(())
     }
 
     pub fn focused_container(&self) -> eyre::Result<&Container> {
@@ -5965,76 +5953,27 @@ mod tests {
     }
 
     #[test]
-    fn test_ensure_named_workspace_for_monitor() {
-        let (mut wm, _context) = setup_window_manager();
+    fn test_workspace_names_synced_from_backend() {
+        let (mut wm, fake) = setup_window_manager_with_fake_desktops(2);
 
-        {
-            // Create a monitor
-            let m = monitor::new(
-                0,
-                Rect::default(),
-                Rect::default(),
-                "TestMonitor".to_string(),
-                "TestDevice".to_string(),
-                "TestDeviceID".to_string(),
-                Some("TestMonitorID".to_string()),
-            );
+        // Set names on the fake backend
+        crate::virtual_desktop::DesktopBackend::set_desktop_name(&*fake, 0, "Workspace").unwrap();
+        crate::virtual_desktop::DesktopBackend::set_desktop_name(&*fake, 1, "Workspace1").unwrap();
 
-            // Add the monitor to the window manager
-            wm.monitors_mut().push_back(m);
-        }
+        // Sync desktop count should load names from backend
+        wm.sync_desktop_count().unwrap();
 
-        {
-            // Create a monitor
-            let m = monitor::new(
-                1,
-                Rect::default(),
-                Rect::default(),
-                "TestMonitor1".to_string(),
-                "TestDevice1".to_string(),
-                "TestDeviceID1".to_string(),
-                Some("TestMonitorID1".to_string()),
-            );
-
-            // Add the monitor to the window manager
-            wm.monitors_mut().push_back(m);
-        }
-
-        // Workspace names list
-        let mut workspace_names = vec!["Workspace".to_string(), "Workspace1".to_string()];
-
-        // Ensure workspaces for monitor 1
-        wm.ensure_named_workspaces_for_monitor(1, &workspace_names)
-            .ok();
-
-        {
-            // Monitor 1 should have 2 workspaces with names "Workspace" and "Workspace1"
-            let monitor = wm.monitors().get(1).unwrap();
+        // Both monitors should have the workspace names from the backend
+        for monitor in wm.monitors() {
             let workspaces = monitor.workspaces();
-            assert_eq!(workspaces.len(), workspace_names.len());
-            for (i, workspace) in workspaces.iter().enumerate() {
-                assert_eq!(workspace.name, Some(workspace_names[i].clone()));
-            }
+            assert_eq!(workspaces.len(), 2);
+            assert_eq!(workspaces[0].name.as_deref(), Some("Workspace"));
+            assert_eq!(workspaces[1].name.as_deref(), Some("Workspace1"));
         }
 
-        // Add more workspaces to list
-        workspace_names.push("Workspace2".to_string());
-        workspace_names.push("Workspace3".to_string());
-
-        // Ensure workspaces for monitor 0
-        wm.ensure_named_workspaces_for_monitor(0, &workspace_names)
-            .ok();
-
-        {
-            // Monitor 0 should have 4 workspaces with names "Workspace", "Workspace1",
-            // "Workspace2" and "Workspace3"
-            let monitor = wm.monitors().front().unwrap();
-            let workspaces = monitor.workspaces();
-            assert_eq!(workspaces.len(), workspace_names.len());
-            for (i, workspace) in workspaces.iter().enumerate() {
-                assert_eq!(workspace.name, Some(workspace_names[i].clone()));
-            }
-        }
+        // Global workspace_names should also be populated
+        assert_eq!(wm.workspace_names.get(&0), Some(&"Workspace".to_string()));
+        assert_eq!(wm.workspace_names.get(&1), Some(&"Workspace1".to_string()));
     }
 
     #[test]
@@ -6160,5 +6099,24 @@ mod tests {
         let _guard = crate::virtual_desktop::testing::InstalledBackendGuard::new();
         let (mut wm, _fake) = setup_window_manager_with_fake_desktops(3);
         assert!(wm.move_workspace_to_monitor(0).is_err());
+    }
+
+    #[test]
+    fn workspace_name_is_written_to_the_native_desktop() {
+        let (mut wm, fake) = setup_window_manager_with_fake_desktops(2);
+        wm.set_workspace_name(0, 1, "web".to_string()).unwrap();
+        assert_eq!(fake.names().get(&1).map(String::as_str), Some("web"));
+        for m in wm.monitors() {
+            assert_eq!(m.workspaces()[1].name.as_deref(), Some("web"));
+        }
+    }
+
+    #[test]
+    fn new_workspace_is_a_noop() {
+        let (mut wm, fake) = setup_window_manager_with_fake_desktops(2);
+        wm.new_workspace().unwrap();
+        assert_eq!(wm.desktop_count, 2);
+        assert_eq!(crate::virtual_desktop::DesktopBackend::desktop_count(&*fake).unwrap(), 2);
+        assert_eq!(wm.monitors()[0].workspaces().len(), 2);
     }
 }
