@@ -74,7 +74,6 @@ use crate::core::WindowKind;
 use crate::core::config_generation::IdWithIdentifier;
 use crate::core::config_generation::MatchingRule;
 use crate::core::config_generation::MatchingStrategy;
-use crate::current_virtual_desktop;
 use crate::monitor::MonitorInformation;
 use crate::notify_subscribers;
 use crate::stackbar_manager;
@@ -195,17 +194,6 @@ impl WindowManager {
         message: SocketMessage,
         mut reply: impl std::io::Write,
     ) -> eyre::Result<()> {
-        if let Some(virtual_desktop_id) = &self.virtual_desktop_id
-            && let Some(id) = current_virtual_desktop()
-            && id != *virtual_desktop_id
-        {
-            tracing::info!(
-                "ignoring events and commands while not on virtual desktop {:?}",
-                virtual_desktop_id
-            );
-            return Ok(());
-        }
-
         #[allow(clippy::useless_asref)]
         // We don't have From implemented for &mut WindowManager
         let initial_state = State::from(self.as_ref());

@@ -26,7 +26,6 @@ use crate::StackbarLabel;
 use crate::StackbarMode;
 use crate::WindowContainerBehaviour;
 use crate::WindowManager;
-use crate::CURRENT_VIRTUAL_DESKTOP;
 use crate::CUSTOM_FFM;
 use crate::DATA_DIR;
 use crate::DISPLAY_INDEX_PREFERENCES;
@@ -68,7 +67,6 @@ pub struct State {
     pub focus_follows_mouse: Option<FocusFollowsMouseImplementation>,
     pub mouse_follows_focus: bool,
     pub has_pending_raise_op: bool,
-    pub virtual_desktop_id: Option<Vec<u8>>,
     pub focused_desktop_idx: usize,
     pub desktop_count: usize,
 }
@@ -159,7 +157,6 @@ pub struct GlobalState {
     pub configuration_dir: PathBuf,
     pub data_dir: PathBuf,
     pub custom_ffm: bool,
-    pub current_virtual_desktop_id: Option<Vec<u8>>,
 }
 
 impl Default for GlobalState {
@@ -219,7 +216,6 @@ impl Default for GlobalState {
             configuration_dir: HOME_DIR.clone(),
             data_dir: DATA_DIR.clone(),
             custom_ffm: CUSTOM_FFM.load(Ordering::SeqCst),
-            current_virtual_desktop_id: CURRENT_VIRTUAL_DESKTOP.lock().clone(),
         }
     }
 }
@@ -317,9 +313,19 @@ impl From<&WindowManager> for State {
             mouse_follows_focus: wm.mouse_follows_focus,
             has_pending_raise_op: wm.has_pending_raise_op,
             unmanaged_window_operation_behaviour: wm.unmanaged_window_operation_behaviour,
-            virtual_desktop_id: wm.virtual_desktop_id.clone(),
             focused_desktop_idx: wm.focused_desktop_idx,
             desktop_count: wm.desktop_count,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serialized_global_state_has_no_legacy_virtual_desktop_field() {
+        let json = serde_json::to_string(&GlobalState::default()).unwrap();
+        assert!(!json.contains("current_virtual_desktop_id"));
     }
 }

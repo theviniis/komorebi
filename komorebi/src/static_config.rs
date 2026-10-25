@@ -40,7 +40,6 @@ use crate::core::StackbarLabel;
 use crate::core::StackbarMode;
 use crate::core::WindowContainerBehaviour;
 use crate::core::WindowManagementBehaviour;
-use crate::current_virtual_desktop;
 use crate::monitor;
 use crate::monitor::Monitor;
 use crate::monitor_reconciliator;
@@ -1337,7 +1336,6 @@ impl StaticConfig {
             incoming_events: incoming,
             command_listener: listener,
             is_paused: false,
-            virtual_desktop_id: current_virtual_desktop(),
             work_area_offset: value.global_work_area_offset,
             window_management_behaviour: WindowManagementBehaviour {
                 current_behaviour: value

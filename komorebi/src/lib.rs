@@ -78,8 +78,6 @@ use serde::Serialize;
 use state::State;
 use uds_windows::UnixStream;
 use which::which;
-use winreg::RegKey;
-use winreg::enums::HKEY_CURRENT_USER;
 
 lazy_static! {
     static ref HIDDEN_HWNDS: Arc<Mutex<Vec<isize>>> = Arc::new(Mutex::new(vec![]));
@@ -240,8 +238,6 @@ lazy_static! {
 
     static ref FLOATING_WINDOW_TOGGLE_ASPECT_RATIO: Arc<Mutex<AspectRatio>> = Arc::new(Mutex::new(AspectRatio::Predefined(PredefinedAspectRatio::Widescreen)));
 
-    static ref CURRENT_VIRTUAL_DESKTOP: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
-
     pub static ref LAYOUT_DEFAULTS: Arc<Mutex<HashMap<DefaultLayout, LayoutDefaultEntry>>> =
         Arc::new(Mutex::new(HashMap::new()));
 }
@@ -287,50 +283,6 @@ pub trait Lockable {
     fn set_locked(&mut self, locked: bool) -> &mut Self;
 }
 
-#[must_use]
-pub fn current_virtual_desktop() -> Option<Vec<u8>> {
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-
-    // This is the path on Windows 10
-    let mut current = hkcu
-        .open_subkey(format!(
-            r#"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\SessionInfo\{}\VirtualDesktops"#,
-            SESSION_ID.load(Ordering::SeqCst)
-        ))
-        .ok()
-        .and_then(
-            |desktops| match desktops.get_raw_value("CurrentVirtualDesktop") {
-                Ok(current) => Option::from(current.bytes),
-                Err(_) => None,
-            },
-        );
-
-    // This is the path on Windows 11
-    if current.is_none() {
-        current = hkcu
-            .open_subkey(r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VirtualDesktops")
-            .ok()
-            .and_then(
-                |desktops| match desktops.get_raw_value("CurrentVirtualDesktop") {
-                    Ok(current) => Option::from(current.bytes),
-                    Err(_) => None,
-                },
-            );
-    }
-
-    // For Win10 users that do not use virtual desktops, the CurrentVirtualDesktop value will not
-    // exist until one has been created in the task view
-
-    // The registry value will also not exist on user login if virtual desktops have been created
-    // but the task view has not been initiated
-
-    // In both of these cases, we return None, and the virtual desktop validation will never run. In
-    // the latter case, if the user desires this validation after initiating the task view, komorebi
-    // should be restarted, and then when this // fn runs again for the first time, it will pick up
-    // the value of CurrentVirtualDesktop and validate against it accordingly
-    current.map(|current| current.to_vec())
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(untagged)]
@@ -338,14 +290,14 @@ pub enum NotificationEvent {
     WindowManager(WindowManagerEvent),
     Socket(SocketMessage),
     Monitor(MonitorNotification),
-    VirtualDesktop(VirtualDesktopNotification),
+    Desktop(DesktopNotification),
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-pub enum VirtualDesktopNotification {
-    EnteredAssociatedVirtualDesktop,
-    LeftAssociatedVirtualDesktop,
+pub enum DesktopNotification {
+    Changed(usize),
+    CountChanged(usize),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

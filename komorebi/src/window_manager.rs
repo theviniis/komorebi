@@ -54,7 +54,6 @@ use crate::border_manager;
 use crate::border_manager::BORDER_OFFSET;
 use crate::border_manager::BORDER_WIDTH;
 use crate::container::Container;
-use crate::current_virtual_desktop;
 use crate::load_configuration;
 use crate::monitor::Monitor;
 use crate::ring::Ring;
@@ -88,7 +87,6 @@ pub struct WindowManager {
     pub focus_follows_mouse: Option<FocusFollowsMouseImplementation>,
     pub mouse_follows_focus: bool,
     pub hotwatch: Hotwatch,
-    pub virtual_desktop_id: Option<Vec<u8>>,
     pub has_pending_raise_op: bool,
     pub pending_move_op: Arc<Option<(usize, usize, isize)>>,
     pub already_moved_window_handles: Arc<Mutex<HashSet<isize>>>,
@@ -169,7 +167,6 @@ impl WindowManager {
             incoming_events: incoming,
             command_listener: listener,
             is_paused: false,
-            virtual_desktop_id: current_virtual_desktop(),
             work_area_offset: None,
             window_management_behaviour: WindowManagementBehaviour::default(),
             cross_monitor_move_behaviour: MoveBehaviour::Swap,

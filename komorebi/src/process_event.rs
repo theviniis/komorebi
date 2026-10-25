@@ -12,7 +12,6 @@ use crate::core::Rect;
 use crate::core::Sizing;
 use crate::core::WindowContainerBehaviour;
 
-use crate::CURRENT_VIRTUAL_DESKTOP;
 use crate::DefaultLayout;
 use crate::FLOATING_APPLICATIONS;
 use crate::HIDDEN_HWNDS;
@@ -21,12 +20,10 @@ use crate::Notification;
 use crate::NotificationEvent;
 use crate::REGEX_IDENTIFIERS;
 use crate::TRAY_AND_MULTI_WINDOW_IDENTIFIERS;
-use crate::VirtualDesktopNotification;
 use crate::Window;
 use crate::border_manager;
 use crate::border_manager::BORDER_OFFSET;
 use crate::border_manager::BORDER_WIDTH;
-use crate::current_virtual_desktop;
 use crate::notify_subscribers;
 use crate::splash;
 use crate::splash::mdm_enrollment;
@@ -252,68 +249,9 @@ impl WindowManager {
             }
         }
 
-        let mut last_known_virtual_desktop_id = CURRENT_VIRTUAL_DESKTOP.lock();
-
-        if let Some(virtual_desktop_id) = &self.virtual_desktop_id {
-            let latest_virtual_desktop_id = current_virtual_desktop();
-            if let Some(id) = latest_virtual_desktop_id {
-                // if we are on the vd associated with komorebi
-                let should_retile = id == *virtual_desktop_id
-                    // and we came from a vd not associated with komorebi
-                    && (*last_known_virtual_desktop_id).clone().unwrap_or_default() != id;
-
-                *last_known_virtual_desktop_id = Some(id.clone());
-                if id != *virtual_desktop_id {
-                    tracing::info!(
-                        "ignoring events and commands while not on virtual desktop {:?}",
-                        virtual_desktop_id
-                    );
-
-                    // TODO: when returning from another VD to the VD associated with komorebi
-                    // if borders are enabled, they will not be drawn again until the user interacts
-                    // with the workspace or forces a retile
-                    border_manager::destroy_all_borders()?;
-
-                    // to be consumed by integrating gui applications like bars to know
-                    // when to hide visual components which don't make sense when not on
-                    // komorebi's associated virtual desktop
-                    tracing::debug!(
-                        "notifying subscribers that we have left komorebi's associated virtual desktop"
-                    );
-                    notify_subscribers(
-                        Notification {
-                            event: NotificationEvent::VirtualDesktop(
-                                VirtualDesktopNotification::LeftAssociatedVirtualDesktop,
-                            ),
-                            state: self.as_ref().into(),
-                        },
-                        true,
-                    )?;
-
-                    return Ok(());
-                }
-
-                if should_retile {
-                    self.retile_all(true)?;
-
-                    // to be consumed by integrating gui applications like bars to know
-                    // when to show visual components associated with komorebi's virtual
-                    // desktop
-                    tracing::debug!(
-                        "notifying subscribers that we are back on komorebi's associated virtual desktop"
-                    );
-                    notify_subscribers(
-                        Notification {
-                            event: NotificationEvent::VirtualDesktop(
-                                VirtualDesktopNotification::EnteredAssociatedVirtualDesktop,
-                            ),
-                            state: self.as_ref().into(),
-                        },
-                        true,
-                    )?;
-                }
-            }
-        }
+        // Sync desktop count at the start of event processing to handle
+        // native desktop changes that may have occurred while we were unfocused.
+        self.sync_desktop_count()?;
 
         #[allow(clippy::useless_asref)]
         // We don't have From implemented for &mut WindowManager
