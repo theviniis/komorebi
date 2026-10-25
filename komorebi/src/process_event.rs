@@ -155,6 +155,10 @@ impl WindowManager {
                     monitor.set_focused_workspace_idx(new);
                 }
                 self.update_focused_workspace(false, true)?;
+
+                // Redraw borders for the newly focused desktop
+                crate::border_manager::redraw_borders_for_focused_desktop(self)?;
+
                 return Ok(());
             }
             WindowManagerEvent::DesktopCountChanged => {

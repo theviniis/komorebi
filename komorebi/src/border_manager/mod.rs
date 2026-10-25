@@ -30,6 +30,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicU32;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use strum::Display;
 use windows::Win32::Foundation::HWND;
@@ -55,6 +56,8 @@ lazy_static! {
     pub static ref STACK: AtomicU32 = AtomicU32::new(u32::from(Colour::Rgb(Rgb::new(0, 165, 66))));
     pub static ref FLOATING: AtomicU32 =
         AtomicU32::new(u32::from(Colour::Rgb(Rgb::new(245, 245, 165))));
+    /// Counter for testing: increments each time borders are redrawn after a desktop switch.
+    pub static ref BORDER_REDRAWS: AtomicUsize = AtomicUsize::new(0);
 }
 
 lazy_static! {
@@ -168,6 +171,20 @@ pub fn destroy_all_borders() -> color_eyre::Result<()> {
             let _ = destroy_border(Box::new(Border::from(hwnd)));
         }
     }
+
+    Ok(())
+}
+
+/// Redraws borders for the currently focused desktop.
+/// Destroys all existing borders and triggers a force update to recreate them.
+/// Increments the `BORDER_REDRAWS` counter for testing.
+pub fn redraw_borders_for_focused_desktop(wm: &WindowManager) -> color_eyre::Result<()> {
+    destroy_all_borders()?;
+
+    // Send a force update notification to trigger async border recreation
+    send_force_update();
+
+    BORDER_REDRAWS.fetch_add(1, Ordering::SeqCst);
 
     Ok(())
 }

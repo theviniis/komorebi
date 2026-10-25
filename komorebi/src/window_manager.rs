@@ -3876,7 +3876,10 @@ impl WindowManager {
         }
 
         // Update focused workspace state
-        self.update_focused_workspace(false, true)
+        self.update_focused_workspace(false, true)?;
+
+        // Redraw borders for the newly focused desktop
+        crate::border_manager::redraw_borders_for_focused_desktop(self)
     }
 
     /// Alias for `focus_desktop` to maintain compatibility with existing code.
@@ -6138,5 +6141,13 @@ mod tests {
         fake.set_window_desktop(43, 1);
         wm.focus_desktop(1).unwrap();
         assert!(!wm.is_desktop_transition_cloak(Window::from(43)));
+    }
+
+    #[test]
+    fn switching_desktop_redraws_borders_once() {
+        let (mut wm, _fake) = setup_window_manager_with_fake_desktops(3);
+        let before = crate::border_manager::BORDER_REDRAWS.load(std::sync::atomic::Ordering::SeqCst);
+        wm.focus_desktop(1).unwrap();
+        assert_eq!(crate::border_manager::BORDER_REDRAWS.load(std::sync::atomic::Ordering::SeqCst), before + 1);
     }
 }
