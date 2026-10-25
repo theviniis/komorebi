@@ -1393,7 +1393,7 @@ impl WindowManager {
 
     #[tracing::instrument(skip(self))]
     pub fn restore_all_windows(&mut self, ignore_restore: bool) -> eyre::Result<()> {
-        tracing::info!("restoring all hidden windows");
+        tracing::info!("restoring all hidden windows on focused workspaces");
 
         let no_titlebar = NO_TITLEBAR.lock();
         let regex_identifiers = REGEX_IDENTIFIERS.lock();
@@ -1401,7 +1401,8 @@ impl WindowManager {
         let border_implementation = border_manager::IMPLEMENTATION.load();
 
         for monitor in self.monitors_mut() {
-            for workspace in monitor.workspaces_mut() {
+            let focused_idx = monitor.focused_workspace_idx();
+            if let Some(workspace) = monitor.workspaces_mut().get_mut(focused_idx) {
                 if let Some(monocle) = &workspace.monocle_container {
                     for window in monocle.windows() {
                         if matches!(border_implementation, BorderImplementation::Windows) {
@@ -1437,6 +1438,62 @@ impl WindowManager {
                         if !ignore_restore {
                             window.restore();
                         }
+                    }
+                }
+
+                if let Some(window) = workspace.maximized_window {
+                    let should_remove_titlebar_for_window = should_act(
+                        &window.title().unwrap_or_default(),
+                        &window.exe().unwrap_or_default(),
+                        &window.class().unwrap_or_default(),
+                        &window.path().unwrap_or_default(),
+                        &no_titlebar,
+                        &regex_identifiers,
+                    )
+                    .is_some();
+
+                    if should_remove_titlebar_for_window {
+                        window.add_title_bar()?;
+                    }
+
+                    if known_transparent_hwnds.contains(&window.hwnd) {
+                        window.opaque()?;
+                    }
+
+                    if matches!(border_implementation, BorderImplementation::Windows) {
+                        window.remove_accent()?;
+                    }
+
+                    if !ignore_restore {
+                        window.restore();
+                    }
+                }
+
+                for window in workspace.floating_windows_mut() {
+                    let should_remove_titlebar_for_window = should_act(
+                        &window.title().unwrap_or_default(),
+                        &window.exe().unwrap_or_default(),
+                        &window.class().unwrap_or_default(),
+                        &window.path().unwrap_or_default(),
+                        &no_titlebar,
+                        &regex_identifiers,
+                    )
+                    .is_some();
+
+                    if should_remove_titlebar_for_window {
+                        window.add_title_bar()?;
+                    }
+
+                    if known_transparent_hwnds.contains(&window.hwnd) {
+                        window.opaque()?;
+                    }
+
+                    if matches!(border_implementation, BorderImplementation::Windows) {
+                        window.remove_accent()?;
+                    }
+
+                    if !ignore_restore {
+                        window.restore();
                     }
                 }
             }
@@ -6167,5 +6224,22 @@ mod tests {
         fake.set_window_desktop(99, 2);
         wm.focus_desktop(0).unwrap();
         assert!(wm.is_window_on_other_desktop(99));
+    }
+
+    #[test]
+    fn load_focused_workspace_does_not_hide_other_workspaces() {
+        let mut m = crate::monitor::Monitor::new(
+            0,
+            crate::core::Rect::default(),
+            crate::core::Rect::default(),
+            "M".into(),
+            "D".into(),
+            "DID".into(),
+            Some("SN".into()),
+        );
+        m.sync_workspace_count(2);
+        crate::HIDDEN_HWNDS.lock().clear();
+        m.load_focused_workspace(false).unwrap();
+        assert!(crate::HIDDEN_HWNDS.lock().is_empty());
     }
 }
