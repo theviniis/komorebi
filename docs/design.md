@@ -34,7 +34,11 @@ A container is just a rectangle where one or more application windows can be dis
 
 This means that:
 
-- Every monitor has its own collection of virtual workspaces
+- All monitors share a single global list of virtual workspaces (synced with native Windows virtual desktops)
 - Workspaces only know about containers and their dimensions, not about individual application windows
 - Every application window must belong to a container, even if that container only contains one application window
 - Many application windows can be stacked and cycled through in the same container within a workspace
+- New windows stay on the native desktop where they were created (no focus stealing or moving to current desktop)
+- Workspace names are synchronized with native desktop names from Task View
+- `new-workspace` and `ensure-workspaces` commands are no-ops (workspaces are managed by Windows)
+- `swap-workspaces-with-monitor` is no longer available (workspaces are global)
