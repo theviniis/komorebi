@@ -526,6 +526,30 @@ impl WindowManager {
                     let focused_workspace_idx =
                         self.focused_workspace_idx_for_monitor_idx(focused_monitor_idx)?;
 
+                    // Check if the window belongs to a different native desktop
+                    let window_desktop_idx = self.desktop_idx_for_new_window(window)?;
+                    if window_desktop_idx != focused_workspace_idx {
+                        tracing::info!(
+                            "window {} born on desktop {}, placing it there without stealing focus",
+                            window.hwnd,
+                            window_desktop_idx
+                        );
+                        // Place the window on the correct monitor's workspace for that desktop
+                        // without changing focus
+                        if let Some(target_monitor) = self.monitors_mut().get_mut(0) {
+                            // For now, use the first monitor; in multi-monitor setups,
+                            // workspace rules will handle cross-monitor placement
+                            if let Some(target_ws) = target_monitor
+                                .workspaces_mut()
+                                .get_mut(window_desktop_idx)
+                            {
+                                target_ws.new_container_for_window(window);
+                                self.update_focused_workspace(false, false)?;
+                            }
+                        }
+                        return Ok(());
+                    }
+
                     let mut needs_reconciliation = None;
 
                     // There are some applications such as Firefox where, if they are focused when a

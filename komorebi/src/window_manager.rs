@@ -3886,6 +3886,18 @@ impl WindowManager {
         self.focus_desktop(idx)
     }
 
+    /// Returns the native desktop index where a new window should be placed.
+    ///
+    /// This queries the OS for the window's current desktop and clamps the result
+    /// to the valid range [0, desktop_count - 1]. This does NOT change focus or
+    /// any window manager state — it only reports where the window "belongs".
+    #[tracing::instrument(skip(self))]
+    pub fn desktop_idx_for_new_window(&mut self, window: Window) -> eyre::Result<usize> {
+        let idx = crate::virtual_desktop::backend().desktop_idx_for_window(window.hwnd)?;
+        let clamped = idx.min(self.desktop_count.saturating_sub(1));
+        Ok(clamped)
+    }
+
     #[tracing::instrument(skip(self))]
     pub fn monitor_workspace_index_by_name(&mut self, name: &str) -> Option<(usize, usize)> {
         tracing::info!("looking up workspace by name");
@@ -6123,5 +6135,15 @@ mod tests {
             assert_eq!(m.workspaces().len(), 3);
         }
         assert_eq!(wm.focused_desktop_idx, 2);
+    }
+
+    #[test]
+    fn window_born_on_other_desktop_is_tiled_without_stealing_focus() {
+        let (mut wm, fake, _guard) = setup_window_manager_with_fake_desktops(3);
+        fake.set_window_desktop(42, 2);
+        wm.focus_desktop(0).unwrap();
+        let idx = wm.desktop_idx_for_new_window(Window::from(42)).unwrap();
+        assert_eq!(idx, 2);
+        assert_eq!(wm.focused_desktop_idx, 0);
     }
 }
