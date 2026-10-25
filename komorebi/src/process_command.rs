@@ -1,4 +1,5 @@
 use color_eyre::eyre;
+use color_eyre::eyre::bail;
 use color_eyre::eyre::OptionExt;
 use color_eyre::eyre::WrapErr;
 use komorebi_themes::colour::Rgb;
@@ -768,14 +769,12 @@ impl WindowManager {
                 self.move_container_to_workspace(workspace_idx, true, None)?;
             }
             SocketMessage::CycleMoveContainerToWorkspace(direction) => {
-                let focused_monitor = self.focused_monitor().ok_or_eyre("there is no monitor")?;
-
-                let focused_workspace_idx = focused_monitor.focused_workspace_idx();
-                let workspaces = focused_monitor.workspaces().len();
+                let focused_workspace_idx = self.focused_workspace_idx().unwrap_or_default();
+                let desktop_count = self.desktop_count;
 
                 let workspace_idx = direction.next_idx(
                     focused_workspace_idx,
-                    NonZeroUsize::new(workspaces)
+                    NonZeroUsize::new(desktop_count)
                         .ok_or_eyre("there must be at least one workspace")?,
                 );
 
@@ -785,8 +784,8 @@ impl WindowManager {
                 let direction = self.direction_from_monitor_idx(monitor_idx);
                 self.move_container_to_monitor(monitor_idx, None, true, direction)?;
             }
-            SocketMessage::SwapWorkspacesToMonitorNumber(monitor_idx) => {
-                self.swap_focused_monitor(monitor_idx)?;
+            SocketMessage::SwapWorkspacesToMonitorNumber(_monitor_idx) => {
+                bail!("swapping workspaces between monitors is not supported with native desktops");
             }
             SocketMessage::CycleMoveContainerToMonitor(direction) => {
                 let monitor_idx = direction.next_idx(
@@ -802,14 +801,12 @@ impl WindowManager {
                 self.move_container_to_workspace(workspace_idx, false, None)?;
             }
             SocketMessage::CycleSendContainerToWorkspace(direction) => {
-                let focused_monitor = self.focused_monitor().ok_or_eyre("there is no monitor")?;
-
-                let focused_workspace_idx = focused_monitor.focused_workspace_idx();
-                let workspaces = focused_monitor.workspaces().len();
+                let focused_workspace_idx = self.focused_workspace_idx().unwrap_or_default();
+                let desktop_count = self.desktop_count;
 
                 let workspace_idx = direction.next_idx(
                     focused_workspace_idx,
-                    NonZeroUsize::new(workspaces)
+                    NonZeroUsize::new(desktop_count)
                         .ok_or_eyre("there must be at least one workspace")?,
                 );
 
@@ -2457,6 +2454,10 @@ mod tests {
         let socket_path = PathBuf::from(&socket_name);
         let mut wm = WindowManager::new(receiver, Some(socket_path.clone())).unwrap();
         
+        // Keep the fake backend installed for the duration of the test
+        // Create guard BEFORE installing fake so it captures the previous backend
+        let _guard = crate::virtual_desktop::testing::InstalledBackendGuard::new();
+        
         // Set up fake desktop backend with 6 desktops so index 5 is valid
         let fake = Arc::new(FakeDesktopBackend::new(6));
         crate::virtual_desktop::set_backend(Some(fake.clone() as Arc<dyn crate::virtual_desktop::DesktopBackend>));
@@ -2475,9 +2476,6 @@ mod tests {
         
         // Sync desktop count to create the workspaces
         wm.sync_desktop_count().unwrap();
-        
-        // Keep the fake backend installed for the duration of the test
-        let _guard = crate::virtual_desktop::testing::InstalledBackendGuard::new();
 
         // send a message
         send_socket_message(&socket_path, SocketMessage::FocusWorkspaceNumber(5));

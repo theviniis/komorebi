@@ -1755,17 +1755,44 @@ impl WindowManager {
     ) -> eyre::Result<()> {
         self.handle_unmanaged_window_behaviour()?;
 
-        tracing::info!("moving container");
+        tracing::info!("moving container to desktop {}", idx);
 
-        let mouse_follows_focus = self.mouse_follows_focus;
-        let monitor = self
-            .focused_monitor_mut()
-            .ok_or_eyre("there is no monitor")?;
+        // Validate index
+        if idx >= self.desktop_count {
+            bail!(
+                "desktop index {} is out of range (desktop_count: {})",
+                idx,
+                self.desktop_count
+            );
+        }
 
-        monitor.move_container_to_workspace(idx, follow, direction)?;
-        monitor.load_focused_workspace(mouse_follows_focus)?;
+        // Collect all window handles from the focused container
+        let hwnds = {
+            let focused_workspace = self.focused_workspace()?;
+            let container = focused_workspace
+                .focused_container()
+                .ok_or_eyre("there is no focused container")?;
 
-        self.update_focused_workspace(mouse_follows_focus, true)?;
+            // Collect hwnds from the focused container's windows
+            container.windows().iter().map(|w| w.hwnd).collect::<Vec<_>>()
+        };
+
+        // Move each window to the target desktop via the backend
+        for hwnd in hwnds {
+            crate::virtual_desktop::backend().move_window_to_desktop(hwnd, idx)?;
+        }
+
+        // If follow is true, switch to the target desktop
+        if follow {
+            self.focus_desktop(idx)?;
+        } else {
+            // Update the workspace structure to reflect the move
+            // Remove container from current workspace and add to target workspace
+            let mouse_follows_focus = self.mouse_follows_focus;
+            let monitor = self.focused_monitor_mut().ok_or_eyre("there is no monitor")?;
+            monitor.move_container_to_workspace(idx, false, direction)?;
+            self.update_focused_workspace(mouse_follows_focus, true)?;
+        }
 
         Ok(())
     }
@@ -1785,28 +1812,8 @@ impl WindowManager {
     }
 
     #[tracing::instrument(skip(self))]
-    pub fn move_workspace_to_monitor(&mut self, idx: usize) -> eyre::Result<()> {
-        tracing::info!("moving workspace");
-        let mouse_follows_focus = self.mouse_follows_focus;
-        let offset = self.work_area_offset;
-        let workspace = self
-            .remove_focused_workspace()
-            .ok_or_eyre("there is no workspace")?;
-
-        {
-            let target_monitor: &mut Monitor = self
-                .monitors_mut()
-                .get_mut(idx)
-                .ok_or_eyre("there is no monitor")?;
-
-            target_monitor.workspaces_mut().push_back(workspace);
-            target_monitor.update_workspaces_globals(offset);
-            target_monitor.focus_workspace(target_monitor.workspaces().len().saturating_sub(1))?;
-            target_monitor.load_focused_workspace(mouse_follows_focus)?;
-        }
-
-        self.focus_monitor(idx)?;
-        self.update_focused_workspace(mouse_follows_focus, true)
+    pub fn move_workspace_to_monitor(&mut self, _idx: usize) -> eyre::Result<()> {
+        bail!("moving workspaces between monitors is not supported with native desktops")
     }
 
     #[tracing::instrument(skip(self))]
@@ -4071,11 +4078,11 @@ mod tests {
     /// desktops, add one test monitor, and call `sync_desktop_count` so the
     /// workspace lists and global index are already in a consistent state.
     ///
-    /// The returned `Arc<FakeDesktopBackend>` keeps the fake installed for the
-    /// lifetime of the test; the backend is uninstalled when the guard is dropped.
+    /// The caller should create an `InstalledBackendGuard` BEFORE calling this
+    /// function to ensure the fake backend is properly restored after the test.
     fn setup_window_manager_with_fake_desktops(
         count: usize,
-    ) -> (WindowManager, Arc<FakeDesktopBackend>, crate::virtual_desktop::testing::InstalledBackendGuard) {
+    ) -> (WindowManager, Arc<FakeDesktopBackend>) {
         let fake = Arc::new(FakeDesktopBackend::new(count));
         virtual_desktop::set_backend(Some(fake.clone() as Arc<dyn virtual_desktop::DesktopBackend>));
 
@@ -4095,10 +4102,7 @@ mod tests {
 
         wm.sync_desktop_count().unwrap();
 
-        // Ensure the fake backend is restored to the previous one after the test
-        let guard = crate::virtual_desktop::testing::InstalledBackendGuard::new();
-
-        (wm, fake, guard)
+        (wm, fake)
     }
 
     #[test]
@@ -5328,26 +5332,8 @@ mod tests {
         // Should contain 2 monitors
         assert_eq!(wm.monitors().len(), 2);
 
-        // Move a workspace from Monitor 0 to Monitor 1
-        wm.move_workspace_to_monitor(1).ok();
-
-        {
-            // Should be focused on Monitor 1
-            assert_eq!(wm.focused_monitor_idx(), 1);
-
-            // Should contain 2 workspaces
-            let monitor = wm.focused_monitor_mut().unwrap();
-            assert_eq!(monitor.workspaces().len(), 2);
-        }
-
-        {
-            // Switch to Monitor 0
-            wm.focus_monitor(0).unwrap();
-
-            // Should contain 1 workspace
-            let monitor = wm.focused_monitor_mut().unwrap();
-            assert_eq!(monitor.workspaces().len(), 1);
-        }
+        // Moving a workspace to another monitor is not supported with native desktops
+        assert!(wm.move_workspace_to_monitor(1).is_err());
     }
 
     #[test]
@@ -6092,7 +6078,8 @@ mod tests {
 
     #[test]
     fn sync_desktop_count_keeps_monitors_uniform() {
-        let (mut wm, _fake, _guard) = setup_window_manager_with_fake_desktops(3);
+        let _guard = crate::virtual_desktop::testing::InstalledBackendGuard::new();
+        let (mut wm, _fake) = setup_window_manager_with_fake_desktops(3);
         wm.sync_desktop_count().unwrap();
         assert_eq!(wm.desktop_count, 3);
         for m in wm.monitors() {
@@ -6102,7 +6089,8 @@ mod tests {
 
     #[test]
     fn focus_desktop_moves_every_monitor_to_the_same_index() {
-        let (mut wm, fake, _guard) = setup_window_manager_with_fake_desktops(3);
+        let _guard = crate::virtual_desktop::testing::InstalledBackendGuard::new();
+        let (mut wm, fake) = setup_window_manager_with_fake_desktops(3);
         wm.focus_desktop(2).unwrap();
         assert_eq!(wm.focused_desktop_idx, 2);
         assert_eq!(fake.switch_calls(), 1);
@@ -6114,14 +6102,16 @@ mod tests {
 
     #[test]
     fn focus_desktop_rejects_out_of_range_index() {
-        let (mut wm, fake, _guard) = setup_window_manager_with_fake_desktops(3);
+        let _guard = crate::virtual_desktop::testing::InstalledBackendGuard::new();
+        let (mut wm, fake) = setup_window_manager_with_fake_desktops(3);
         assert!(wm.focus_desktop(3).is_err());
         assert_eq!(fake.switch_calls(), 0);
     }
 
     #[test]
     fn desktop_changed_updates_index_without_switching_back() {
-        let (mut wm, fake, _guard) = setup_window_manager_with_fake_desktops(3);
+        let _guard = crate::virtual_desktop::testing::InstalledBackendGuard::new();
+        let (mut wm, fake) = setup_window_manager_with_fake_desktops(3);
         wm.process_event(WindowManagerEvent::DesktopChanged { new: 1, old: 0 }).unwrap();
         assert_eq!(wm.focused_desktop_idx, 1);
         assert_eq!(fake.switch_calls(), 0);
@@ -6129,7 +6119,8 @@ mod tests {
 
     #[test]
     fn desktop_moved_permutes_workspaces_on_every_monitor() {
-        let (mut wm, _fake, _guard) = setup_window_manager_with_fake_desktops(3);
+        let _guard = crate::virtual_desktop::testing::InstalledBackendGuard::new();
+        let (mut wm, _fake) = setup_window_manager_with_fake_desktops(3);
         wm.process_event(WindowManagerEvent::DesktopMoved { desktop: 0, old: 0, new: 2 }).unwrap();
         for m in wm.monitors() {
             assert_eq!(m.workspaces().len(), 3);
@@ -6139,11 +6130,35 @@ mod tests {
 
     #[test]
     fn window_born_on_other_desktop_is_tiled_without_stealing_focus() {
-        let (mut wm, fake, _guard) = setup_window_manager_with_fake_desktops(3);
+        let _guard = crate::virtual_desktop::testing::InstalledBackendGuard::new();
+        let (mut wm, fake) = setup_window_manager_with_fake_desktops(3);
         fake.set_window_desktop(42, 2);
         wm.focus_desktop(0).unwrap();
         let idx = wm.desktop_idx_for_new_window(Window::from(42)).unwrap();
         assert_eq!(idx, 2);
         assert_eq!(wm.focused_desktop_idx, 0);
+    }
+
+    #[test]
+    fn move_container_moves_every_window_to_target_desktop() {
+        let _guard = crate::virtual_desktop::testing::InstalledBackendGuard::new();
+        let (mut wm, fake) = setup_window_manager_with_fake_desktops(3);
+        // Create a container with hwnds 10 and 11 on desktop 0
+        let focused_workspace = wm.focused_workspace_mut().unwrap();
+        focused_workspace.new_container_for_window(Window::from(10));
+        focused_workspace
+            .focused_container_mut()
+            .unwrap()
+            .add_window(Window::from(11));
+        wm.move_container_to_workspace(2, false, None).unwrap_or_else(|e| panic!("move_container_to_workspace failed: {:?}", e));
+        assert_eq!(fake.moved(), vec![(10, 2), (11, 2)]);
+        assert_eq!(wm.focused_desktop_idx, 0);
+    }
+
+    #[test]
+    fn moving_a_workspace_to_another_monitor_is_rejected() {
+        let _guard = crate::virtual_desktop::testing::InstalledBackendGuard::new();
+        let (mut wm, _fake) = setup_window_manager_with_fake_desktops(3);
+        assert!(wm.move_workspace_to_monitor(0).is_err());
     }
 }
