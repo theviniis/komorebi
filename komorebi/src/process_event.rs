@@ -454,209 +454,202 @@ impl WindowManager {
             WindowManagerEvent::Show(_, window)
             | WindowManagerEvent::Manage(window)
             | WindowManagerEvent::Uncloak(_, window) => {
-                if matches!(event, WindowManagerEvent::Uncloak(_, _))
-                    && self.uncloack_to_ignore >= 1
-                {
-                    tracing::info!("ignoring uncloak after monocle move by mouse across monitors");
-                    self.uncloack_to_ignore = self.uncloack_to_ignore.saturating_sub(1);
-                } else {
-                    let focused_monitor_idx = self.focused_monitor_idx();
-                    let focused_workspace_idx =
-                        self.focused_workspace_idx_for_monitor_idx(focused_monitor_idx)?;
+                let focused_monitor_idx = self.focused_monitor_idx();
+                let focused_workspace_idx =
+                    self.focused_workspace_idx_for_monitor_idx(focused_monitor_idx)?;
 
-                    // Check if the window belongs to a different native desktop
-                    let window_desktop_idx = self.desktop_idx_for_new_window(window)?;
-                    if window_desktop_idx != focused_workspace_idx {
-                        tracing::info!(
-                            "window {} born on desktop {}, placing it there without stealing focus",
-                            window.hwnd,
-                            window_desktop_idx
-                        );
-                        // Place the window on the correct monitor's workspace for that desktop
-                        // without changing focus
-                        if let Some(target_monitor) = self.monitors_mut().get_mut(0) {
-                            // For now, use the first monitor; in multi-monitor setups,
-                            // workspace rules will handle cross-monitor placement
-                            if let Some(target_ws) = target_monitor
-                                .workspaces_mut()
-                                .get_mut(window_desktop_idx)
-                            {
-                                target_ws.new_container_for_window(window);
-                                self.update_focused_workspace(false, false)?;
-                            }
-                        }
-                        return Ok(());
-                    }
-
-                    let mut needs_reconciliation = None;
-
-                    // There are some applications such as Firefox where, if they are focused when a
-                    // workspace switch takes place, it will fire an additional Show event, which will
-                    // result in them being associated with both the original workspace and the workspace
-                    // being switched to. This loop is to try to ensure that we don't end up with
-                    // duplicates across multiple workspaces, as it results in ghost layout tiles.
-                    let mut proceed = true;
-
-                    // Check for potential `alt-tab` event
-                    if matches!(
-                        event,
-                        WindowManagerEvent::Uncloak(_, _) | WindowManagerEvent::Show(_, _)
-                    ) {
-                        needs_reconciliation = self.needs_reconciliation(window)?;
-
-                        if let Some((m_idx, ws_idx)) = needs_reconciliation {
-                            self.perform_reconciliation(window, (m_idx, ws_idx))?;
-
-                            // Since there was a reconciliation after an `alt-tab`, that means this
-                            // window is already handled by komorebi so we shouldn't proceed with
-                            // adding it as a new window.
-                            proceed = false;
+                // Check if the window belongs to a different native desktop
+                let window_desktop_idx = self.desktop_idx_for_new_window(window)?;
+                if window_desktop_idx != focused_workspace_idx {
+                    tracing::info!(
+                        "window {} born on desktop {}, placing it there without stealing focus",
+                        window.hwnd,
+                        window_desktop_idx
+                    );
+                    // Place the window on the correct monitor's workspace for that desktop
+                    // without changing focus
+                    if let Some(target_monitor) = self.monitors_mut().get_mut(0) {
+                        // For now, use the first monitor; in multi-monitor setups,
+                        // workspace rules will handle cross-monitor placement
+                        if let Some(target_ws) = target_monitor
+                            .workspaces_mut()
+                            .get_mut(window_desktop_idx)
+                        {
+                            target_ws.new_container_for_window(window);
+                            self.update_focused_workspace(false, false)?;
                         }
                     }
+                    return Ok(());
+                }
 
-                    if let Some((m_idx, w_idx)) = self.known_hwnds.get(&window.hwnd)
-                        && let Some(focused_workspace_idx) = self
-                            .monitors()
-                            .get(*m_idx)
-                            .map(|m| m.focused_workspace_idx())
-                        && *m_idx != self.focused_monitor_idx()
-                        && *w_idx != focused_workspace_idx
-                    {
-                        tracing::debug!(
-                            "ignoring show event for window already associated with another workspace"
-                        );
+                let mut needs_reconciliation = None;
 
-                        window.hide();
+                // There are some applications such as Firefox where, if they are focused when a
+                // workspace switch takes place, it will fire an additional Show event, which will
+                // result in them being associated with both the original workspace and the workspace
+                // being switched to. This loop is to try to ensure that we don't end up with
+                // duplicates across multiple workspaces, as it results in ghost layout tiles.
+                let mut proceed = true;
+
+                // Check for potential `alt-tab` event
+                if matches!(
+                    event,
+                    WindowManagerEvent::Uncloak(_, _) | WindowManagerEvent::Show(_, _)
+                ) {
+                    needs_reconciliation = self.needs_reconciliation(window)?;
+
+                    if let Some((m_idx, ws_idx)) = needs_reconciliation {
+                        self.perform_reconciliation(window, (m_idx, ws_idx))?;
+
+                        // Since there was a reconciliation after an `alt-tab`, that means this
+                        // window is already handled by komorebi so we shouldn't proceed with
+                        // adding it as a new window.
                         proceed = false;
                     }
+                }
 
-                    // after enforce_workspace_rules() has run, check if window exists in ANY workspace
-                    // to prevent duplication when workspace rules move windows across workspaces
-                    if proceed {
-                        let window_already_managed = self
-                            .monitors()
-                            .iter()
-                            .flat_map(|m| m.workspaces())
-                            .any(|ws| ws.contains_window(window.hwnd));
+                if let Some((m_idx, w_idx)) = self.known_hwnds.get(&window.hwnd)
+                    && let Some(focused_workspace_idx) = self
+                        .monitors()
+                        .get(*m_idx)
+                        .map(|m| m.focused_workspace_idx())
+                    && *m_idx != self.focused_monitor_idx()
+                    && *w_idx != focused_workspace_idx
+                {
+                    tracing::debug!(
+                        "ignoring show event for window already associated with another workspace"
+                    );
 
-                        if window_already_managed {
-                            tracing::debug!(
-                                "skipping window addition, already managed after workspace rule enforcement"
-                            );
+                    window.hide();
+                    proceed = false;
+                }
 
-                            proceed = false;
+                // after enforce_workspace_rules() has run, check if window exists in ANY workspace
+                // to prevent duplication when workspace rules move windows across workspaces
+                if proceed {
+                    let window_already_managed = self
+                        .monitors()
+                        .iter()
+                        .flat_map(|m| m.workspaces())
+                        .any(|ws| ws.contains_window(window.hwnd));
+
+                    if window_already_managed {
+                        tracing::debug!(
+                            "skipping window addition, already managed after workspace rule enforcement"
+                        );
+
+                        proceed = false;
+                    }
+                }
+
+                if proceed {
+                    let behaviour = self.window_management_behaviour(
+                        focused_monitor_idx,
+                        focused_workspace_idx,
+                    );
+                    let workspace = self.focused_workspace_mut()?;
+                    let workspace_contains_window = workspace.contains_window(window.hwnd);
+                    let monocle_container = workspace.monocle_container.clone();
+
+                    if !workspace_contains_window && needs_reconciliation.is_none() {
+                        let floating_applications = FLOATING_APPLICATIONS.lock();
+                        let mut should_float = false;
+
+                        if !floating_applications.is_empty() {
+                            let regex_identifiers = REGEX_IDENTIFIERS.lock();
+
+                            if let (Ok(title), Ok(exe_name), Ok(class), Ok(path)) =
+                                (window.title(), window.exe(), window.class(), window.path())
+                            {
+                                should_float = should_act(
+                                    &title,
+                                    &exe_name,
+                                    &class,
+                                    &path,
+                                    &floating_applications,
+                                    &regex_identifiers,
+                                )
+                                .is_some();
+                            }
+                        }
+
+                        if behaviour.float_override
+                            || behaviour.floating_layer_override
+                            || (should_float && !matches!(event, WindowManagerEvent::Manage(_)))
+                        {
+                            let placement = if behaviour.floating_layer_override {
+                                // Floating layer override placement
+                                behaviour.floating_layer_placement
+                            } else if behaviour.float_override {
+                                // Float override placement
+                                behaviour.float_override_placement
+                            } else {
+                                // Float rule placement
+                                behaviour.float_rule_placement
+                            };
+                            // Center floating windows according to the proper placement if not
+                            // on a floating workspace
+                            let center_spawned_floats =
+                                placement.should_center() && workspace.tile;
+                            workspace.floating_windows_mut().push_back(window);
+                            workspace.layer = WorkspaceLayer::Floating;
+                            if center_spawned_floats {
+                                let mut floating_window = window;
+                                floating_window.center(
+                                    &workspace.globals.work_area,
+                                    placement.should_resize(),
+                                )?;
+                            }
+                            self.update_focused_workspace(false, false)?;
+                        } else {
+                            match behaviour.current_behaviour {
+                                WindowContainerBehaviour::Create => {
+                                    workspace.new_container_for_window(window);
+                                    workspace.layer = WorkspaceLayer::Tiling;
+                                    self.update_focused_workspace(false, false)?;
+                                }
+                                WindowContainerBehaviour::Append => {
+                                    workspace
+                                        .focused_container_mut()
+                                        .ok_or_eyre("there is no focused container")?
+                                        .add_window(window);
+                                    workspace.layer = WorkspaceLayer::Tiling;
+                                    self.update_focused_workspace(true, false)?;
+                                    stackbar_manager::send_notification();
+                                }
+                            }
+                        }
+
+                        if (self.focused_workspace()?.containers().len() == 1
+                            && self.focused_workspace()?.floating_windows().is_empty())
+                            || (self.focused_workspace()?.containers().is_empty()
+                                && self.focused_workspace()?.floating_windows().len() == 1)
+                        {
+                            // If after adding this window the workspace only contains 1 window, it
+                            // means it was previously empty and we focused the desktop to unfocus
+                            // any previous window from other workspace, so now we need to focus
+                            // this window again. This is needed because sometimes some windows
+                            // first send the `FocusChange` event and only the `Show` event after
+                            // and we will be focusing the desktop on the `FocusChange` event since
+                            // it is still empty.
+                            window.focus(self.mouse_follows_focus)?;
                         }
                     }
 
-                    if proceed {
-                        let behaviour = self.window_management_behaviour(
-                            focused_monitor_idx,
-                            focused_workspace_idx,
-                        );
-                        let workspace = self.focused_workspace_mut()?;
-                        let workspace_contains_window = workspace.contains_window(window.hwnd);
-                        let monocle_container = workspace.monocle_container.clone();
-
-                        if !workspace_contains_window && needs_reconciliation.is_none() {
-                            let floating_applications = FLOATING_APPLICATIONS.lock();
-                            let mut should_float = false;
-
-                            if !floating_applications.is_empty() {
-                                let regex_identifiers = REGEX_IDENTIFIERS.lock();
-
-                                if let (Ok(title), Ok(exe_name), Ok(class), Ok(path)) =
-                                    (window.title(), window.exe(), window.class(), window.path())
-                                {
-                                    should_float = should_act(
-                                        &title,
-                                        &exe_name,
-                                        &class,
-                                        &path,
-                                        &floating_applications,
-                                        &regex_identifiers,
-                                    )
-                                    .is_some();
-                                }
-                            }
-
-                            if behaviour.float_override
-                                || behaviour.floating_layer_override
-                                || (should_float && !matches!(event, WindowManagerEvent::Manage(_)))
-                            {
-                                let placement = if behaviour.floating_layer_override {
-                                    // Floating layer override placement
-                                    behaviour.floating_layer_placement
-                                } else if behaviour.float_override {
-                                    // Float override placement
-                                    behaviour.float_override_placement
-                                } else {
-                                    // Float rule placement
-                                    behaviour.float_rule_placement
-                                };
-                                // Center floating windows according to the proper placement if not
-                                // on a floating workspace
-                                let center_spawned_floats =
-                                    placement.should_center() && workspace.tile;
-                                workspace.floating_windows_mut().push_back(window);
-                                workspace.layer = WorkspaceLayer::Floating;
-                                if center_spawned_floats {
-                                    let mut floating_window = window;
-                                    floating_window.center(
-                                        &workspace.globals.work_area,
-                                        placement.should_resize(),
-                                    )?;
-                                }
-                                self.update_focused_workspace(false, false)?;
-                            } else {
-                                match behaviour.current_behaviour {
-                                    WindowContainerBehaviour::Create => {
-                                        workspace.new_container_for_window(window);
-                                        workspace.layer = WorkspaceLayer::Tiling;
-                                        self.update_focused_workspace(false, false)?;
-                                    }
-                                    WindowContainerBehaviour::Append => {
-                                        workspace
-                                            .focused_container_mut()
-                                            .ok_or_eyre("there is no focused container")?
-                                            .add_window(window);
-                                        workspace.layer = WorkspaceLayer::Tiling;
-                                        self.update_focused_workspace(true, false)?;
-                                        stackbar_manager::send_notification();
-                                    }
-                                }
-                            }
-
-                            if (self.focused_workspace()?.containers().len() == 1
-                                && self.focused_workspace()?.floating_windows().is_empty())
-                                || (self.focused_workspace()?.containers().is_empty()
-                                    && self.focused_workspace()?.floating_windows().len() == 1)
-                            {
-                                // If after adding this window the workspace only contains 1 window, it
-                                // means it was previously empty and we focused the desktop to unfocus
-                                // any previous window from other workspace, so now we need to focus
-                                // this window again. This is needed because sometimes some windows
-                                // first send the `FocusChange` event and only the `Show` event after
-                                // and we will be focusing the desktop on the `FocusChange` event since
-                                // it is still empty.
-                                window.focus(self.mouse_follows_focus)?;
-                            }
+                    if workspace_contains_window {
+                        let mut monocle_window_event = false;
+                        if let Some(ref monocle) = monocle_container
+                            && let Some(monocle_window) = monocle.focused_window()
+                            && monocle_window.hwnd == window.hwnd
+                        {
+                            monocle_window_event = true;
                         }
 
-                        if workspace_contains_window {
-                            let mut monocle_window_event = false;
-                            if let Some(ref monocle) = monocle_container
-                                && let Some(monocle_window) = monocle.focused_window()
-                                && monocle_window.hwnd == window.hwnd
-                            {
-                                monocle_window_event = true;
-                            }
-
-                            let workspace = self.focused_workspace()?;
-                            if !(monocle_window_event || workspace.layer != WorkspaceLayer::Tiling)
-                                && monocle_container.is_some()
-                            {
-                                window.hide();
-                            }
+                        let workspace = self.focused_workspace()?;
+                        if !(monocle_window_event || workspace.layer != WorkspaceLayer::Tiling)
+                            && monocle_container.is_some()
+                        {
+                            window.hide();
                         }
                     }
                 }

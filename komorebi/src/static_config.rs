@@ -1373,7 +1373,6 @@ impl StaticConfig {
             has_pending_raise_op: false,
             pending_move_op: Arc::new(None),
             already_moved_window_handles: Arc::new(Mutex::new(HashSet::new())),
-            uncloack_to_ignore: 0,
             known_hwnds: HashMap::new(),
             focused_desktop_idx: 0,
             desktop_count: 1,

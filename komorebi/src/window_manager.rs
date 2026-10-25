@@ -90,8 +90,6 @@ pub struct WindowManager {
     pub has_pending_raise_op: bool,
     pub pending_move_op: Arc<Option<(usize, usize, isize)>>,
     pub already_moved_window_handles: Arc<Mutex<HashSet<isize>>>,
-    pub uncloack_to_ignore: usize,
-    /// Maps each known window hwnd to the (monitor, workspace) index pair managing it
     pub known_hwnds: HashMap<isize, (usize, usize)>,
     /// The index of the currently focused native desktop (global across all monitors).
     ///
@@ -180,7 +178,6 @@ impl WindowManager {
             has_pending_raise_op: false,
             pending_move_op: Arc::new(None),
             already_moved_window_handles: Arc::new(Mutex::new(HashSet::new())),
-            uncloack_to_ignore: 0,
             known_hwnds: HashMap::new(),
             focused_desktop_idx: 0,
             desktop_count: 1,
@@ -946,10 +943,8 @@ impl WindowManager {
                     .workspaces_mut()
                     .get_mut(origin_workspace_idx)
                     .ok_or_eyre("there is no workspace for this monitor")?;
-                let mut uncloack_amount = 0;
                 for container in origin_workspace.containers_mut() {
                     container.restore();
-                    uncloack_amount += 1;
                 }
                 origin_workspace.reintegrate_monocle_container()?;
 
@@ -961,13 +956,6 @@ impl WindowManager {
                         target_container_idx,
                     ),
                 )?;
-                // After we restore the origin workspace, some windows that were cloacked
-                // by the monocle might now be uncloacked which would trigger a workspace
-                // reconciliation since the focused monitor would be different from origin.
-                // That workspace reconciliation would focus the window on the origin monitor.
-                // So we need to ignore the uncloak events produced by the origin workspace
-                // restore to avoid that issue.
-                self.uncloack_to_ignore = uncloack_amount;
             }
         } else if origin_workspace
             .maximized_window
@@ -3784,6 +3772,19 @@ impl WindowManager {
         Ok(self.focused_desktop_idx)
     }
 
+    /// Returns `true` if the given window's cloak event was likely caused by a native
+    /// desktop transition rather than a user action.
+    ///
+    /// When Windows switches virtual desktops, it automatically cloaks windows on the
+    /// desktop being left and uncloaks windows on the desktop being entered. These
+    /// cloak events should not trigger komorebi's reconciliation logic.
+    pub fn is_desktop_transition_cloak(&self, window: Window) -> bool {
+        let window_desktop = crate::virtual_desktop::backend()
+            .desktop_idx_for_window(window.hwnd)
+            .ok();
+        window_desktop != Some(self.focused_desktop_idx)
+    }
+
     pub fn focused_workspace_for_monitor_idx(&self, idx: usize) -> eyre::Result<&Workspace> {
         self.monitors()
             .get(idx)
@@ -6115,5 +6116,27 @@ mod tests {
         assert_eq!(wm.desktop_count, 2);
         assert_eq!(crate::virtual_desktop::DesktopBackend::desktop_count(&*fake).unwrap(), 2);
         assert_eq!(wm.monitors()[0].workspaces().len(), 2);
+    }
+
+    #[test]
+    fn cloak_from_desktop_transition_does_not_trigger_reconciliation() {
+        let (mut wm, fake) = setup_window_manager_with_fake_desktops(3);
+        fake.set_window_desktop(42, 0);
+        // window 42 lives on desktop 0; focus goes to desktop 1
+        wm.focus_desktop(1).unwrap();
+        assert!(wm.is_desktop_transition_cloak(Window::from(42)));
+        crate::HIDDEN_HWNDS.lock().clear();
+        wm.process_event(WindowManagerEvent::Cloak(
+            crate::winevent::WinEvent::ObjectCloaked, Window::from(42))).unwrap();
+        assert_eq!(wm.focused_desktop_idx, 1);
+        assert!(!crate::HIDDEN_HWNDS.lock().contains(&42));
+    }
+
+    #[test]
+    fn cloak_on_the_focused_desktop_is_still_processed() {
+        let (mut wm, fake) = setup_window_manager_with_fake_desktops(3);
+        fake.set_window_desktop(43, 1);
+        wm.focus_desktop(1).unwrap();
+        assert!(!wm.is_desktop_transition_cloak(Window::from(43)));
     }
 }
