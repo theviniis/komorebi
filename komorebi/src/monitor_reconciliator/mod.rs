@@ -618,6 +618,10 @@ where
                                 {
                                     let focused_window_idx = container.focused_window_idx();
                                     for (w_idx, window) in container.windows().iter().enumerate() {
+                                        // Skip windows on other native desktops
+                                        if wm.is_window_on_other_desktop(window.hwnd) {
+                                            continue;
+                                        }
                                         windows_to_remove.push(window.hwnd);
                                         if is_focused_workspace
                                             && c_idx == focused_container_idx
@@ -633,17 +637,21 @@ where
                                 }
 
                                 if let Some(maximized) = &workspace.maximized_window {
-                                    windows_to_remove.push(maximized.hwnd);
-                                    // Minimize the focused window since Windows might try
-                                    // to move it to another monitor if it was focused.
-                                    if maximized.is_focused() {
-                                        maximized.minimize();
+                                    if !wm.is_window_on_other_desktop(maximized.hwnd) {
+                                        windows_to_remove.push(maximized.hwnd);
+                                        // Minimize the focused window since Windows might try
+                                        // to move it to another monitor if it was focused.
+                                        if maximized.is_focused() {
+                                            maximized.minimize();
+                                        }
                                     }
                                 }
 
                                 if let Some(container) = &workspace.monocle_container {
                                     for window in container.windows() {
-                                        windows_to_remove.push(window.hwnd);
+                                        if !wm.is_window_on_other_desktop(window.hwnd) {
+                                            windows_to_remove.push(window.hwnd);
+                                        }
                                     }
                                     if let Some(window) = container.focused_window() {
                                         // Minimize the focused window since Windows might try
@@ -655,11 +663,13 @@ where
                                 }
 
                                 for window in workspace.floating_windows() {
-                                    windows_to_remove.push(window.hwnd);
-                                    // Minimize the focused window since Windows might try
-                                    // to move it to another monitor if it was focused.
-                                    if window.is_focused() {
-                                        window.minimize();
+                                    if !wm.is_window_on_other_desktop(window.hwnd) {
+                                        windows_to_remove.push(window.hwnd);
+                                        // Minimize the focused window since Windows might try
+                                        // to move it to another monitor if it was focused.
+                                        if window.is_focused() {
+                                            window.minimize();
+                                        }
                                     }
                                 }
                             }

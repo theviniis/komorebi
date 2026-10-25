@@ -1,15 +1,15 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-use crate::DATA_DIR;
-use crate::HIDING_BEHAVIOUR;
+use crate::border_manager;
+use crate::notify_subscribers;
+use crate::winevent::WinEvent;
 use crate::HidingBehaviour;
 use crate::NotificationEvent;
 use crate::Window;
 use crate::WindowManager;
 use crate::WindowManagerEvent;
-use crate::border_manager;
-use crate::notify_subscribers;
-use crate::winevent::WinEvent;
+use crate::DATA_DIR;
+use crate::HIDING_BEHAVIOUR;
 
 use crossbeam_channel::Receiver;
 use crossbeam_channel::Sender;
@@ -53,17 +53,15 @@ pub fn listen_for_notifications(
     wm: Arc<Mutex<WindowManager>>,
     known_hwnds: HashMap<isize, (usize, usize)>,
 ) {
-    watch_for_orphans(known_hwnds);
+    watch_for_orphans(wm.clone(), known_hwnds);
 
-    std::thread::spawn(move || {
-        loop {
-            match handle_notifications(wm.clone()) {
-                Ok(()) => {
-                    tracing::warn!("restarting finished thread");
-                }
-                Err(error) => {
-                    tracing::warn!("restarting failed thread: {}", error);
-                }
+    std::thread::spawn(move || loop {
+        match handle_notifications(wm.clone()) {
+            Ok(()) => {
+                tracing::warn!("restarting finished thread");
+            }
+            Err(error) => {
+                tracing::warn!("restarting failed thread: {}", error);
             }
         }
     });
@@ -145,32 +143,30 @@ fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result<()>
     Ok(())
 }
 
-fn watch_for_orphans(known_hwnds: HashMap<isize, (usize, usize)>) {
+fn watch_for_orphans(wm: Arc<Mutex<WindowManager>>, known_hwnds: HashMap<isize, (usize, usize)>) {
     // Cache current hwnds
     {
         let mut cache = HWNDS_CACHE.lock();
         *cache = known_hwnds;
     }
 
-    std::thread::spawn(move || {
-        loop {
-            match find_orphans() {
-                Ok(()) => {
-                    tracing::warn!("restarting finished thread");
-                }
-                Err(error) => {
-                    if cfg!(debug_assertions) {
-                        tracing::error!("restarting failed thread: {:?}", error)
-                    } else {
-                        tracing::error!("restarting failed thread: {}", error)
-                    }
+    std::thread::spawn(move || loop {
+        match find_orphans(wm.clone()) {
+            Ok(()) => {
+                tracing::warn!("restarting finished thread");
+            }
+            Err(error) => {
+                if cfg!(debug_assertions) {
+                    tracing::error!("restarting failed thread: {:?}", error)
+                } else {
+                    tracing::error!("restarting failed thread: {}", error)
                 }
             }
         }
     });
 }
 
-fn find_orphans() -> color_eyre::Result<()> {
+fn find_orphans(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result<()> {
     tracing::info!("watching");
 
     loop {
@@ -180,8 +176,16 @@ fn find_orphans() -> color_eyre::Result<()> {
         let mut cache = HWNDS_CACHE.lock();
         let mut orphan_hwnds = HashMap::new();
 
+        // Check if window is on another desktop to avoid reaping it
+        let focused_desktop_idx = wm.lock().focused_desktop_idx;
+
         for (hwnd, (m_idx, w_idx)) in cache.iter() {
             let window = Window::from(*hwnd);
+
+            // Skip windows on other native desktops
+            if wm.lock().is_window_on_other_desktop(*hwnd) {
+                continue;
+            }
 
             #[allow(deprecated)]
             if !window.is_window()

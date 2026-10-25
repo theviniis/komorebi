@@ -3785,6 +3785,16 @@ impl WindowManager {
         window_desktop != Some(self.focused_desktop_idx)
     }
 
+    /// Returns `true` if the given window handle belongs to a different native desktop
+    /// than the currently focused one. This is used to prevent reaping or reconciling
+    /// windows that are on other desktops.
+    pub fn is_window_on_other_desktop(&self, hwnd: isize) -> bool {
+        crate::virtual_desktop::backend()
+            .desktop_idx_for_window(hwnd)
+            .ok()
+            .is_some_and(|i| i != self.focused_desktop_idx)
+    }
+
     pub fn focused_workspace_for_monitor_idx(&self, idx: usize) -> eyre::Result<&Workspace> {
         self.monitors()
             .get(idx)
@@ -6149,5 +6159,13 @@ mod tests {
         let before = crate::border_manager::BORDER_REDRAWS.load(std::sync::atomic::Ordering::SeqCst);
         wm.focus_desktop(1).unwrap();
         assert_eq!(crate::border_manager::BORDER_REDRAWS.load(std::sync::atomic::Ordering::SeqCst), before + 1);
+    }
+
+    #[test]
+    fn window_on_other_desktop_is_not_reaped() {
+        let (mut wm, fake) = setup_window_manager_with_fake_desktops(3);
+        fake.set_window_desktop(99, 2);
+        wm.focus_desktop(0).unwrap();
+        assert!(wm.is_window_on_other_desktop(99));
     }
 }
