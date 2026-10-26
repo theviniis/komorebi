@@ -1,12 +1,11 @@
 # new-workspace
 
 ```
-Create and append a new workspace on the focused monitor
+Compatibility no-op: create native desktops in Windows Task View
 
 Usage: komorebic.exe new-workspace
 
 Options:
-  -h, --help
-          Print help
+  -h, --help  Print help
 
 ```

@@ -1,1 +1,3 @@
 *.json text diff
+# Empty context lines in evidence patches require a space prefix.
+docs/plans/evidence/*.patch whitespace=-blank-at-eol

@@ -1,0 +1,4 @@
+Final release exit=0; CLI help confirms bounded navigation; static/socket/notification schemas match existing artifacts.
+target\release\komorebi.exe sha256=ef9a7d531862f5cc3978e9123c3e114cb154f93c950586a59ce1d57714d232d1
+target\release\komorebic.exe sha256=0111828b2ea2f398fcfff61f696d94bc05d4a1c0ed81a4a2ed7465364168d3a1
+target\release\komorebi-bar.exe sha256=6ba8f729a83953c17348eaeb52c0a266a3f44a0b80bcf37fbfc0ff7c32ccb96a

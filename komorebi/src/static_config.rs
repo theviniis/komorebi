@@ -1,4 +1,36 @@
-use crate::animation::PerAnimationPrefixConfig;
+use crate::AspectRatio;
+use crate::Axis;
+use crate::CrossBoundaryBehaviour;
+use crate::DATA_DIR;
+use crate::DEFAULT_CONTAINER_PADDING;
+use crate::DEFAULT_MOUSE_FOLLOWS_FOCUS;
+use crate::DEFAULT_RESIZE_DELTA;
+use crate::DEFAULT_WORKSPACE_PADDING;
+use crate::DISPLAY_INDEX_PREFERENCES;
+use crate::FLOATING_APPLICATIONS;
+use crate::FLOATING_WINDOW_TOGGLE_ASPECT_RATIO;
+use crate::FloatingLayerBehaviour;
+use crate::HIDING_BEHAVIOUR;
+use crate::IGNORE_IDENTIFIERS;
+use crate::LAYERED_WHITELIST;
+use crate::LAYOUT_DEFAULTS;
+use crate::MANAGE_IDENTIFIERS;
+use crate::MONITOR_INDEX_PREFERENCES;
+use crate::NO_TITLEBAR;
+use crate::OBJECT_NAME_CHANGE_ON_LAUNCH;
+use crate::OBJECT_NAME_CHANGE_TITLE_IGNORE_LIST;
+use crate::Placement;
+use crate::PredefinedAspectRatio;
+use crate::REGEX_IDENTIFIERS;
+use crate::ResolvedPathBuf;
+use crate::SLOW_APPLICATION_COMPENSATION_TIME;
+use crate::SLOW_APPLICATION_IDENTIFIERS;
+use crate::TRANSPARENCY_BLACKLIST;
+use crate::TRAY_AND_MULTI_WINDOW_IDENTIFIERS;
+use crate::WINDOW_HANDLING_BEHAVIOUR;
+use crate::WINDOWS_11;
+use crate::WORKSPACE_MATCHING_RULES;
+use crate::WindowHandlingBehaviour;
 use crate::animation::ANIMATION_DURATION_GLOBAL;
 use crate::animation::ANIMATION_DURATION_PER_ANIMATION;
 use crate::animation::ANIMATION_ENABLED_GLOBAL;
@@ -9,18 +41,14 @@ use crate::animation::ANIMATION_STYLE_PER_ANIMATION;
 use crate::animation::DEFAULT_ANIMATION_FPS;
 use crate::animation::DEFAULT_GHOST_MOVEMENT;
 use crate::animation::GHOST_MOVEMENT_ENABLED;
+use crate::animation::PerAnimationPrefixConfig;
 use crate::asc::ApplicationSpecificConfiguration;
 use crate::asc::AscApplicationRulesOrSchema;
 use crate::border_manager;
-use crate::border_manager::ZOrder;
 use crate::border_manager::IMPLEMENTATION;
 use crate::border_manager::STYLE;
+use crate::border_manager::ZOrder;
 use crate::config_generation::WorkspaceMatchingRule;
-use crate::core::config_generation::ApplicationConfiguration;
-use crate::core::config_generation::ApplicationConfigurationGenerator;
-use crate::core::config_generation::ApplicationOptions;
-use crate::core::config_generation::MatchingRule;
-use crate::core::config_generation::MatchingStrategy;
 use crate::core::AnimationStyle;
 use crate::core::BorderImplementation;
 use crate::core::BorderStyle;
@@ -40,6 +68,11 @@ use crate::core::StackbarLabel;
 use crate::core::StackbarMode;
 use crate::core::WindowContainerBehaviour;
 use crate::core::WindowManagementBehaviour;
+use crate::core::config_generation::ApplicationConfiguration;
+use crate::core::config_generation::ApplicationConfigurationGenerator;
+use crate::core::config_generation::ApplicationOptions;
+use crate::core::config_generation::MatchingRule;
+use crate::core::config_generation::MatchingStrategy;
 use crate::monitor;
 use crate::monitor::Monitor;
 use crate::monitor_reconciliator;
@@ -61,39 +94,6 @@ use crate::window_manager::WindowManager;
 use crate::window_manager_event::WindowManagerEvent;
 use crate::windows_api::WindowsApi;
 use crate::workspace::Workspace;
-use crate::AspectRatio;
-use crate::Axis;
-use crate::CrossBoundaryBehaviour;
-use crate::FloatingLayerBehaviour;
-use crate::Placement;
-use crate::PredefinedAspectRatio;
-use crate::ResolvedPathBuf;
-use crate::WindowHandlingBehaviour;
-use crate::DATA_DIR;
-use crate::DEFAULT_CONTAINER_PADDING;
-use crate::DEFAULT_MOUSE_FOLLOWS_FOCUS;
-use crate::DEFAULT_RESIZE_DELTA;
-use crate::DEFAULT_WORKSPACE_PADDING;
-use crate::DISPLAY_INDEX_PREFERENCES;
-use crate::FLOATING_APPLICATIONS;
-use crate::FLOATING_WINDOW_TOGGLE_ASPECT_RATIO;
-use crate::HIDING_BEHAVIOUR;
-use crate::IGNORE_IDENTIFIERS;
-use crate::LAYERED_WHITELIST;
-use crate::LAYOUT_DEFAULTS;
-use crate::MANAGE_IDENTIFIERS;
-use crate::MONITOR_INDEX_PREFERENCES;
-use crate::NO_TITLEBAR;
-use crate::OBJECT_NAME_CHANGE_ON_LAUNCH;
-use crate::OBJECT_NAME_CHANGE_TITLE_IGNORE_LIST;
-use crate::REGEX_IDENTIFIERS;
-use crate::SLOW_APPLICATION_COMPENSATION_TIME;
-use crate::SLOW_APPLICATION_IDENTIFIERS;
-use crate::TRANSPARENCY_BLACKLIST;
-use crate::TRAY_AND_MULTI_WINDOW_IDENTIFIERS;
-use crate::WINDOWS_11;
-use crate::WINDOW_HANDLING_BEHAVIOUR;
-use crate::WORKSPACE_MATCHING_RULES;
 use color_eyre::eyre;
 use crossbeam_channel::Receiver;
 use hotwatch::EventKind;
@@ -108,8 +108,8 @@ use std::collections::HashSet;
 use std::io::ErrorKind;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use uds_windows::UnixListener;
 use uds_windows::UnixStream;
 
@@ -211,7 +211,7 @@ pub struct Wallpaper {
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 /// Workspace configuration
 pub struct WorkspaceConfig {
-    /// Name
+    /// Global native desktop name. When monitors disagree, the first configured monitor wins.
     pub name: String,
     /// Layout
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -403,7 +403,7 @@ impl From<&Workspace> for WorkspaceConfig {
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 /// Monitor configuration
 pub struct MonitorConfig {
-    /// Workspace configurations
+    /// Layout/configuration for existing native desktop indices; excess entries do not create desktops.
     pub workspaces: Vec<WorkspaceConfig>,
     /// Monitor-specific work area offset
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1331,6 +1331,7 @@ impl StaticConfig {
         };
 
         let mut wm = WindowManager {
+            window_api: std::sync::Arc::new(crate::windows_api::RealWindowsApi),
             monitors: Ring::default(),
             monitor_usr_idx_map: HashMap::new(),
             incoming_events: incoming,
@@ -1374,8 +1375,10 @@ impl StaticConfig {
             pending_move_op: Arc::new(None),
             already_moved_window_handles: Arc::new(Mutex::new(HashSet::new())),
             known_hwnds: HashMap::new(),
+            window_desktops: HashMap::new(),
             focused_desktop_idx: 0,
             desktop_count: 1,
+            desktop_ids: Vec::new(),
             workspace_names: HashMap::new(),
         };
 
@@ -1407,9 +1410,42 @@ impl StaticConfig {
         Ok(wm)
     }
 
+    pub(crate) fn align_configured_monitor(
+        monitor: &mut Monitor,
+        ids: &[crate::virtual_desktop::DesktopId],
+        configured_count: usize,
+    ) -> eyre::Result<()> {
+        if ids.is_empty() {
+            color_eyre::eyre::bail!("native desktop snapshot must not be empty");
+        }
+        if monitor
+            .workspaces()
+            .iter()
+            .skip(ids.len())
+            .any(|ws| !ws.is_empty())
+        {
+            color_eyre::eyre::bail!(
+                "reconcile live workspaces before applying native configuration"
+            );
+        }
+        if configured_count > ids.len() {
+            tracing::warn!(
+                "ignoring workspace configurations beyond the {} native desktops",
+                ids.len()
+            );
+        }
+        monitor.sync_workspace_count(ids.len());
+        for (workspace, &id) in monitor.workspaces_mut().iter_mut().zip(ids) {
+            workspace.native_desktop_id = Some(id);
+        }
+        Ok(())
+    }
+
     pub fn postload(path: &PathBuf, wm: &Arc<Mutex<WindowManager>>) -> eyre::Result<()> {
         let mut value = Self::read(path)?;
         let mut wm = wm.lock();
+        wm.sync_desktop_count()?;
+        let native_ids = wm.desktop_ids.clone();
 
         let configs_with_preference: Vec<_> =
             DISPLAY_INDEX_PREFERENCES.read().keys().copied().collect();
@@ -1454,7 +1490,11 @@ impl StaticConfig {
                     configs_used.push(used_config_idx);
                 }
 
-                monitor.ensure_workspace_count(monitor_config.workspaces.len());
+                Self::align_configured_monitor(
+                    monitor,
+                    &native_ids,
+                    monitor_config.workspaces.len(),
+                )?;
                 monitor.work_area_offset = monitor_config.work_area_offset;
                 monitor.window_based_work_area_offset =
                     monitor_config.window_based_work_area_offset;
@@ -1547,7 +1587,11 @@ impl StaticConfig {
                         None,
                     );
 
-                    m.ensure_workspace_count(monitor_config.workspaces.len());
+                    Self::align_configured_monitor(
+                        &mut m,
+                        &native_ids,
+                        monitor_config.workspaces.len(),
+                    )?;
                     m.work_area_offset = monitor_config.work_area_offset;
                     m.window_based_work_area_offset = monitor_config.window_based_work_area_offset;
                     m.window_based_work_area_offset_limit = monitor_config
@@ -1573,6 +1617,7 @@ impl StaticConfig {
             }
         }
 
+        wm.apply_configured_workspace_names()?;
         wm.enforce_workspace_rules()?;
 
         if value.border == Some(true) {
@@ -1586,6 +1631,8 @@ impl StaticConfig {
         let mut value = Self::read(path)?;
 
         value.apply_globals()?;
+        wm.sync_desktop_count()?;
+        let native_ids = wm.desktop_ids.clone();
 
         let configs_with_preference: Vec<_> =
             DISPLAY_INDEX_PREFERENCES.read().keys().copied().collect();
@@ -1628,7 +1675,11 @@ impl StaticConfig {
                     configs_used.push(used_config_idx);
                 }
 
-                monitor.ensure_workspace_count(monitor_config.workspaces.len());
+                Self::align_configured_monitor(
+                    monitor,
+                    &native_ids,
+                    monitor_config.workspaces.len(),
+                )?;
                 if monitor.work_area_offset.is_none() {
                     monitor.work_area_offset = monitor_config.work_area_offset;
                 }
@@ -1715,7 +1766,11 @@ impl StaticConfig {
                         None,
                     );
 
-                    m.ensure_workspace_count(monitor_config.workspaces.len());
+                    Self::align_configured_monitor(
+                        &mut m,
+                        &native_ids,
+                        monitor_config.workspaces.len(),
+                    )?;
                     m.work_area_offset = monitor_config.work_area_offset;
                     m.window_based_work_area_offset = monitor_config.window_based_work_area_offset;
                     m.window_based_work_area_offset_limit = monitor_config
@@ -1785,6 +1840,7 @@ impl StaticConfig {
             Some(FocusFollowsMouseImplementation::Komorebi) => {}
         };
 
+        wm.apply_configured_workspace_names()?;
         let monitor_count = wm.monitors().len();
 
         for i in 0..monitor_count {
@@ -2027,9 +2083,7 @@ mod tests {
     #[test]
     fn deserialize_custom_layout_rules() {
         // set an environment variable for testing
-        unsafe {
-            std::env::set_var("VAR", "VALUE");
-        }
+        let _var_guard = crate::TestEnvGuard::set("VAR", "VALUE");
 
         let config = r#"
         {

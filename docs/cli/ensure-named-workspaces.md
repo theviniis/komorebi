@@ -1,19 +1,15 @@
 # ensure-named-workspaces
 
 ```
-Create these many named workspaces for the specified monitor
+Compatibility no-op: create and name native desktops in Task View
 
 Usage: komorebic.exe ensure-named-workspaces <MONITOR> [NAMES]...
 
 Arguments:
-  <MONITOR>
-          Monitor index (zero-indexed)
-
-  [NAMES]...
-          Names of desired workspaces
+  <MONITOR>   Monitor index (zero-indexed)
+  [NAMES]...  Names of desired workspaces
 
 Options:
-  -h, --help
-          Print help
+  -h, --help  Print help
 
 ```

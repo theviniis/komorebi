@@ -218,8 +218,7 @@ pub fn listen_for_notifications(wm: Arc<Mutex<WindowManager>>) {
 pub fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result<()> {
     tracing::info!("listening");
 
-    let receiver = event_rx();
-    event_tx().send(Notification::Update(None))?;
+    let receiver = crate::notifications_with_initial(event_rx(), Notification::ForceUpdate);
 
     let mut previous_snapshot = Ring::default();
     let mut previous_pending_move_op = None;

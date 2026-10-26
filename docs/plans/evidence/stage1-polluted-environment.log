@@ -1,0 +1,10 @@
+USERPROFILE=C:\Users\user
+$ cargo test -p komorebi --lib state::tests::serialized_global_state_has_no_legacy_virtual_desktop_field -- --exact --test-threads=1
+error: could not create home directory: 'C:\Users\user\.rustup': Acesso negado. (os error 5)
+
+EXIT 1
+USERPROFILE=C:\Users\user
+$ cargo test -p komorebi --lib window_manager::tests::move_container_moves_every_window_to_target_desktop -- --exact --test-threads=1
+error: could not create home directory: 'C:\Users\user\.rustup': Acesso negado. (os error 5)
+
+EXIT 1

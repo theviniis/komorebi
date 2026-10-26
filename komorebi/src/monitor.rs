@@ -3,8 +3,8 @@ use std::collections::VecDeque;
 use std::sync::atomic::Ordering;
 
 use color_eyre::eyre;
-use color_eyre::eyre::bail;
 use color_eyre::eyre::OptionExt;
+use color_eyre::eyre::bail;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -13,19 +13,17 @@ use crate::border_manager::BORDER_OFFSET;
 use crate::border_manager::BORDER_WIDTH;
 use crate::core::Rect;
 
-use crate::container::Container;
-use crate::ring::Ring;
-use crate::workspace::Workspace;
-use crate::workspace::WorkspaceGlobals;
-use crate::workspace::WorkspaceLayer;
+use crate::DEFAULT_CONTAINER_PADDING;
+use crate::DEFAULT_WORKSPACE_PADDING;
 use crate::DefaultLayout;
 use crate::FloatingLayerBehaviour;
 use crate::Layout;
 use crate::OperationDirection;
 use crate::Wallpaper;
-use crate::WindowsApi;
-use crate::DEFAULT_CONTAINER_PADDING;
-use crate::DEFAULT_WORKSPACE_PADDING;
+use crate::container::Container;
+use crate::ring::Ring;
+use crate::workspace::Workspace;
+use crate::workspace::WorkspaceGlobals;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -352,24 +350,13 @@ impl Monitor {
     }
 
     pub fn remove_workspace_by_idx(&mut self, idx: usize) -> Option<Workspace> {
-        if idx < self.workspaces().len() {
-            return self.workspaces_mut().remove(idx);
-        }
-
-        if idx == 0 {
-            self.workspaces_mut().push_back(Workspace::default());
-        } else {
-            self.focus_workspace(idx.saturating_sub(1)).ok()?;
-        };
-
+        let _ = idx;
+        tracing::warn!("removing workspaces independently of native desktops is not supported");
         None
     }
 
-    pub fn ensure_workspace_count(&mut self, ensure_count: usize) {
-        if self.workspaces().len() < ensure_count {
-            self.workspaces_mut()
-                .resize(ensure_count, Workspace::default());
-        }
+    pub fn ensure_workspace_count(&mut self, _ensure_count: usize) {
+        tracing::warn!("ensure_workspace_count is a no-op: desktops are managed by Task View");
     }
 
     /// Resize the workspace list to exactly `count` (grow or shrink).
@@ -394,7 +381,8 @@ impl Monitor {
     }
 
     pub fn remove_workspaces(&mut self) -> VecDeque<Workspace> {
-        std::mem::take(self.workspaces_mut())
+        tracing::warn!("removing all workspaces independently of native desktops is not supported");
+        VecDeque::new()
     }
 
     #[tracing::instrument(skip(self))]
@@ -404,81 +392,23 @@ impl Monitor {
         follow: bool,
         direction: Option<OperationDirection>,
     ) -> eyre::Result<()> {
-        let workspace = self
-            .focused_workspace_mut()
-            .ok_or_eyre("there is no workspace")?;
+        self.move_container_to_workspace_with_window_api(
+            target_workspace_idx,
+            follow,
+            direction,
+            &crate::windows_api::RealWindowsApi,
+        )
+    }
 
-        if workspace.maximized_window.is_some() {
-            bail!("cannot move native maximized window to another monitor or workspace");
-        }
-
-        let foreground_hwnd = WindowsApi::foreground_window()?;
-        let floating_window_index = workspace
-            .floating_windows()
-            .iter()
-            .position(|w| w.hwnd == foreground_hwnd);
-
-        if let Some(idx) = floating_window_index {
-            if let Some(window) = workspace.floating_windows_mut().remove(idx) {
-                let workspaces = self.workspaces_mut();
-                #[allow(clippy::option_if_let_else)]
-                let target_workspace = match workspaces.get_mut(target_workspace_idx) {
-                    None => {
-                        workspaces.resize(target_workspace_idx + 1, Workspace::default());
-                        workspaces.get_mut(target_workspace_idx).unwrap()
-                    }
-                    Some(workspace) => workspace,
-                };
-
-                target_workspace.floating_windows_mut().push_back(window);
-                target_workspace.layer = WorkspaceLayer::Floating;
-            }
-        } else {
-            let container = workspace
-                .remove_focused_container()
-                .ok_or_eyre("there is no container")?;
-
-            let workspaces = self.workspaces_mut();
-
-            #[allow(clippy::option_if_let_else)]
-            let target_workspace = match workspaces.get_mut(target_workspace_idx) {
-                None => {
-                    workspaces.resize(target_workspace_idx + 1, Workspace::default());
-                    workspaces.get_mut(target_workspace_idx).unwrap()
-                }
-                Some(workspace) => workspace,
-            };
-
-            if target_workspace.monocle_container.is_some() {
-                for container in target_workspace.containers_mut() {
-                    container.restore();
-                }
-
-                for window in target_workspace.floating_windows_mut() {
-                    window.restore();
-                }
-
-                target_workspace.reintegrate_monocle_container()?;
-            }
-
-            target_workspace.layer = WorkspaceLayer::Tiling;
-
-            if let Some(direction) = direction {
-                self.add_container_with_direction(
-                    container,
-                    Some(target_workspace_idx),
-                    direction,
-                )?;
-            } else {
-                target_workspace.add_container_to_back(container);
-            }
-        }
-
-        if follow {
-            self.focus_workspace(target_workspace_idx)?;
-        }
-
-        Ok(())
+    pub fn move_container_to_workspace_with_window_api(
+        &mut self,
+        target_workspace_idx: usize,
+        follow: bool,
+        direction: Option<OperationDirection>,
+        window_api: &dyn crate::windows_api::WindowApi,
+    ) -> eyre::Result<()> {
+        let _ = (target_workspace_idx, follow, direction, window_api);
+        bail!("move windows through WindowManager to synchronize native desktops")
     }
 
     #[tracing::instrument(skip(self))]
@@ -489,7 +419,7 @@ impl Monitor {
             let workspaces = self.workspaces_mut();
 
             if workspaces.get(idx).is_none() {
-                workspaces.resize(idx + 1, Workspace::default());
+                bail!("native desktop index {idx} does not exist");
             }
             self.last_focused_workspace = Some(self.workspaces.focused_idx());
             self.workspaces.focus(idx);
@@ -565,27 +495,10 @@ mod tests {
             "TestDeviceID".to_string(),
             Some("TestMonitorID".to_string()),
         );
-
-        let new_workspace_index = m.new_workspace_idx();
-        assert_eq!(new_workspace_index, 1);
-
-        // Create workspace 2
-        m.focus_workspace(new_workspace_index).unwrap();
-
-        // Should have 2 workspaces
-        assert_eq!(m.workspaces().len(), 2);
-
-        // Create workspace 3
-        m.focus_workspace(new_workspace_index + 1).unwrap();
-
-        // Should have 3 workspaces
-        assert_eq!(m.workspaces().len(), 3);
-
-        // Remove workspace 1
-        m.remove_workspace_by_idx(1);
-
-        // Should have only 2 workspaces
-        assert_eq!(m.workspaces().len(), 2);
+        m.sync_workspace_count(3);
+        let before = m.clone();
+        assert!(m.remove_workspace_by_idx(1).is_none());
+        assert_eq!(m, before);
     }
 
     #[test]
@@ -599,27 +512,10 @@ mod tests {
             "TestDeviceID".to_string(),
             Some("TestMonitorID".to_string()),
         );
-
-        let new_workspace_index = m.new_workspace_idx();
-        assert_eq!(new_workspace_index, 1);
-
-        // Create workspace 2
-        m.focus_workspace(new_workspace_index).unwrap();
-
-        // Should have 2 workspaces
-        assert_eq!(m.workspaces().len(), 2);
-
-        // Create workspace 3
-        m.focus_workspace(new_workspace_index + 1).unwrap();
-
-        // Should have 3 workspaces
-        assert_eq!(m.workspaces().len(), 3);
-
-        // Remove all workspaces
-        m.remove_workspaces();
-
-        // All workspaces should be removed
-        assert_eq!(m.workspaces().len(), 0);
+        m.sync_workspace_count(2);
+        let before = m.clone();
+        assert!(m.remove_workspaces().is_empty());
+        assert_eq!(m, before);
     }
 
     #[test]
@@ -652,18 +548,13 @@ mod tests {
             "TestDeviceID".to_string(),
             Some("TestMonitorID".to_string()),
         );
-
-        let new_workspace_index = m.new_workspace_idx();
-        assert_eq!(new_workspace_index, 1);
-
-        // Focus workspace 2
-        m.focus_workspace(new_workspace_index).unwrap();
-
-        // Should have 2 workspaces
-        assert_eq!(m.workspaces().len(), 2);
-
-        // Should be focused on workspace 2
-        assert_eq!(m.focused_workspace_idx(), 1);
+        assert!(m.focus_workspace(1).is_err());
+        assert_eq!(m.workspaces().len(), 1);
+        m.sync_workspace_count(3);
+        m.focus_workspace(2).unwrap();
+        assert_eq!(m.focused_workspace_idx(), 2);
+        assert!(m.focus_workspace(3).is_err());
+        assert_eq!(m.workspaces().len(), 3);
     }
 
     #[test]
@@ -695,57 +586,10 @@ mod tests {
             "TestDeviceID".to_string(),
             Some("TestMonitorID".to_string()),
         );
-
-        let new_workspace_index = m.new_workspace_idx();
-        assert_eq!(new_workspace_index, 1);
-
-        {
-            // Create workspace 1 and add 3 containers
-            let workspace = m.focused_workspace_mut().unwrap();
-            for _ in 0..3 {
-                let container = Container::default();
-                workspace.add_container_to_back(container);
-            }
-
-            // Should have 3 containers in workspace 1
-            assert_eq!(m.focused_workspace().unwrap().containers().len(), 3);
-        }
-
-        // Create and focus workspace 2
-        m.focus_workspace(new_workspace_index).unwrap();
-
-        // Focus workspace 1
-        m.focus_workspace(0).unwrap();
-
-        // Move container to workspace 2
-        m.move_container_to_workspace(1, true, None).unwrap();
-
-        // Should be focused on workspace 2
-        assert_eq!(m.focused_workspace_idx(), 1);
-
-        // Workspace 2 should have 1 container now
-        assert_eq!(m.focused_workspace().unwrap().containers().len(), 1);
-
-        // Move to workspace 1
-        m.focus_workspace(0).unwrap();
-
-        // Workspace 1 should have 2 containers
-        assert_eq!(m.focused_workspace().unwrap().containers().len(), 2);
-
-        // Move a another container from workspace 1 to workspace 2 without following
-        m.move_container_to_workspace(1, false, None).unwrap();
-
-        // Should have 1 container
-        assert_eq!(m.focused_workspace().unwrap().containers().len(), 1);
-
-        // Should still be focused on workspace 1
-        assert_eq!(m.focused_workspace_idx(), 0);
-
-        // Switch to workspace 2
-        m.focus_workspace(1).unwrap();
-
-        // Workspace 2 should now have 2 containers
-        assert_eq!(m.focused_workspace().unwrap().containers().len(), 2);
+        m.sync_workspace_count(2);
+        let before = m.clone();
+        assert!(m.move_container_to_workspace(1, true, None).is_err());
+        assert_eq!(m, before);
     }
 
     #[test]
@@ -759,33 +603,8 @@ mod tests {
             "TestDeviceID".to_string(),
             Some("TestMonitorID".to_string()),
         );
-
-        {
-            // Create workspace 1 and add 3 containers
-            let workspace = m.focused_workspace_mut().unwrap();
-            for _ in 0..3 {
-                let container = Container::default();
-                workspace.add_container_to_back(container);
-            }
-
-            // Should have 3 containers in workspace 1
-            assert_eq!(m.focused_workspace().unwrap().containers().len(), 3);
-        }
-
-        // Should only have 1 workspace
+        assert!(m.move_container_to_workspace(8, true, None).is_err());
         assert_eq!(m.workspaces().len(), 1);
-
-        // Try to move a container to a workspace that doesn't exist
-        m.move_container_to_workspace(8, true, None).unwrap();
-
-        // Should have 9 workspaces now
-        assert_eq!(m.workspaces().len(), 9);
-
-        // Should be focused on workspace 8
-        assert_eq!(m.focused_workspace_idx(), 8);
-
-        // Should have 1 container in workspace 8
-        assert_eq!(m.focused_workspace().unwrap().containers().len(), 1);
     }
 
     #[test]
@@ -799,19 +618,9 @@ mod tests {
             "TestDeviceID".to_string(),
             Some("TestMonitorID".to_string()),
         );
-
-        // Create and focus another workspace
-        let new_workspace_index = m.new_workspace_idx();
-        m.focus_workspace(new_workspace_index).unwrap();
-
-        // Should have 2 workspaces now
-        assert_eq!(m.workspaces().len(), 2, "Monitor should have 2 workspaces");
-
-        // Ensure the monitor has at least 5 workspaces
-        m.ensure_workspace_count(5);
-
-        // Monitor should have 5 workspaces
-        assert_eq!(m.workspaces().len(), 5, "Monitor should have 5 workspaces");
+        m.sync_workspace_count(2);
+        m.ensure_workspace_count(9);
+        assert_eq!(m.workspaces().len(), 2);
     }
 
     #[test]
@@ -825,16 +634,8 @@ mod tests {
             "TestDeviceID".to_string(),
             Some("TestMonitorID".to_string()),
         );
-
-        // Ensure the monitor has at least 5 workspaces
-        m.ensure_workspace_count(5);
-
-        // Monitor should have 5 workspaces
-        assert_eq!(m.workspaces().len(), 5, "Monitor should have 5 workspaces");
-
-        // Try to call the ensure workspace count again to ensure it doesn't change
-        m.ensure_workspace_count(3);
-        assert_eq!(m.workspaces().len(), 5, "Monitor should have 5 workspaces");
+        m.ensure_workspace_count(9);
+        assert_eq!(m.workspaces().len(), 1);
     }
 
     #[test]

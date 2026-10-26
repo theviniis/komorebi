@@ -255,12 +255,12 @@ impl Hidden {
                 // and resolution changes here
                 WM_DISPLAYCHANGE => {
                     tracing::debug!(
-                        "WM_DISPLAYCHANGE event received with wparam: {}- work area or display resolution changed",
+                        "WM_DISPLAYCHANGE event received with wparam: {}- display topology or resolution changed",
                         wparam.0
                     );
 
                     monitor_reconciliator::send_notification(
-                        monitor_reconciliator::MonitorNotification::ResolutionScalingChanged,
+                        monitor_reconciliator::MonitorNotification::DisplayConnectionChange,
                     );
                     LRESULT(0)
                 }

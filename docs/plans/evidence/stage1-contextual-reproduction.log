@@ -1,0 +1,42 @@
+POLLUTED_USERPROFILE=True
+$ C:\Users\thevi\AppData\Local\Temp\komorebi-stage1-baseline-y6m95ubb\stage1-diagnostic-tests.exe state::tests::serialized_global_state_has_no_legacy_virtual_desktop_field --exact --test-threads=1
+
+running 1 test
+test state::tests::serialized_global_state_has_no_legacy_virtual_desktop_field ... FAILED
+
+failures:
+
+---- state::tests::serialized_global_state_has_no_legacy_virtual_desktop_field stdout ----
+
+thread 'state::tests::serialized_global_state_has_no_legacy_virtual_desktop_field' (37496) panicked at komorebi\src\lib.rs:214:63:
+there is no local data directory
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    state::tests::serialized_global_state_has_no_legacy_virtual_desktop_field
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 126 filtered out; finished in 0.00s
+
+
+EXIT 101
+POLLUTED_USERPROFILE=True
+$ C:\Users\thevi\AppData\Local\Temp\komorebi-stage1-baseline-y6m95ubb\stage1-diagnostic-tests.exe window_manager::tests::move_container_moves_every_window_to_target_desktop --exact --test-threads=1
+
+running 1 test
+test window_manager::tests::move_container_moves_every_window_to_target_desktop ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 126 filtered out; finished in 0.01s
+
+
+EXIT 0
+POLLUTED_USERPROFILE=False
+$ C:\Users\thevi\AppData\Local\Temp\komorebi-stage1-baseline-y6m95ubb\stage1-diagnostic-tests.exe monitor_reconciliator::channel_race_diagnostic::competing_global_receiver_steals_notification --exact --test-threads=1
+
+running 1 test
+test monitor_reconciliator::channel_race_diagnostic::competing_global_receiver_steals_notification ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 126 filtered out; finished in 0.00s
+
+
+EXIT 0

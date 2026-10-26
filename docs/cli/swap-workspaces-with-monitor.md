@@ -1,16 +1,14 @@
 # swap-workspaces-with-monitor
 
 ```
-Swap focused monitor workspaces with specified monitor
+Unsupported with native desktops; returns an explanatory error
 
 Usage: komorebic.exe swap-workspaces-with-monitor <TARGET>
 
 Arguments:
-  <TARGET>
-          Target index (zero-indexed)
+  <TARGET>  Target index (zero-indexed)
 
 Options:
-  -h, --help
-          Print help
+  -h, --help  Print help
 
 ```

@@ -51,7 +51,7 @@ windows-numerics = { workspace = true }
 windows-implement = { workspace = true }
 windows-interface = { workspace = true }
 winput = "0.2"
-winvd = "0.0.49"
+winvd = "=0.0.49"
 windows_058 = { package = "windows", version = "0.58", features = ["Win32_Foundation"] }
 winreg = "0.56"
 serde_with = { version = "3.12", features = ["schemars_1"] }

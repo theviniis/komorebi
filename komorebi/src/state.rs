@@ -1,3 +1,30 @@
+use crate::BorderColours;
+use crate::BorderStyle;
+use crate::CUSTOM_FFM;
+use crate::DATA_DIR;
+use crate::DISPLAY_INDEX_PREFERENCES;
+use crate::DUPLICATE_MONITOR_SERIAL_IDS;
+use crate::FocusFollowsMouseImplementation;
+use crate::HIDING_BEHAVIOUR;
+use crate::HOME_DIR;
+use crate::HidingBehaviour;
+use crate::IGNORE_IDENTIFIERS;
+use crate::LAYERED_WHITELIST;
+use crate::MANAGE_IDENTIFIERS;
+use crate::MONITOR_INDEX_PREFERENCES;
+use crate::MonocleFocusBehaviour;
+use crate::MoveBehaviour;
+use crate::OBJECT_NAME_CHANGE_ON_LAUNCH;
+use crate::OperationBehaviour;
+use crate::REMOVE_TITLEBARS;
+use crate::Rect;
+use crate::StackbarLabel;
+use crate::StackbarMode;
+use crate::TRANSPARENCY_BLACKLIST;
+use crate::TRAY_AND_MULTI_WINDOW_IDENTIFIERS;
+use crate::WORKSPACE_MATCHING_RULES;
+use crate::WindowContainerBehaviour;
+use crate::WindowManager;
 use crate::border_manager;
 use crate::border_manager::STYLE;
 use crate::config_generation::MatchingRule;
@@ -14,33 +41,6 @@ use crate::stackbar_manager::STACKBAR_UNFOCUSED_TEXT_COLOUR;
 use crate::transparency_manager::TRANSPARENCY_ALPHA;
 use crate::transparency_manager::TRANSPARENCY_ENABLED;
 use crate::workspace::Workspace;
-use crate::BorderColours;
-use crate::BorderStyle;
-use crate::FocusFollowsMouseImplementation;
-use crate::HidingBehaviour;
-use crate::MonocleFocusBehaviour;
-use crate::MoveBehaviour;
-use crate::OperationBehaviour;
-use crate::Rect;
-use crate::StackbarLabel;
-use crate::StackbarMode;
-use crate::WindowContainerBehaviour;
-use crate::WindowManager;
-use crate::CUSTOM_FFM;
-use crate::DATA_DIR;
-use crate::DISPLAY_INDEX_PREFERENCES;
-use crate::DUPLICATE_MONITOR_SERIAL_IDS;
-use crate::HIDING_BEHAVIOUR;
-use crate::HOME_DIR;
-use crate::IGNORE_IDENTIFIERS;
-use crate::LAYERED_WHITELIST;
-use crate::MANAGE_IDENTIFIERS;
-use crate::MONITOR_INDEX_PREFERENCES;
-use crate::OBJECT_NAME_CHANGE_ON_LAUNCH;
-use crate::REMOVE_TITLEBARS;
-use crate::TRANSPARENCY_BLACKLIST;
-use crate::TRAY_AND_MULTI_WINDOW_IDENTIFIERS;
-use crate::WORKSPACE_MATCHING_RULES;
 use komorebi_themes::colour::Colour;
 use komorebi_themes::colour::Rgb;
 use serde::Deserialize;
@@ -67,13 +67,25 @@ pub struct State {
     pub focus_follows_mouse: Option<FocusFollowsMouseImplementation>,
     pub mouse_follows_focus: bool,
     pub has_pending_raise_op: bool,
+    #[serde(default)]
     pub focused_desktop_idx: usize,
+    #[serde(default = "default_desktop_count")]
     pub desktop_count: usize,
+}
+
+fn default_desktop_count() -> usize {
+    1
 }
 
 impl State {
     pub fn has_been_modified(&self, wm: &WindowManager) -> bool {
         let new = Self::from(wm);
+
+        if self.focused_desktop_idx != new.focused_desktop_idx
+            || self.desktop_count != new.desktop_count
+        {
+            return true;
+        }
 
         if self.monitors != new.monitors {
             return true;
@@ -247,6 +259,7 @@ impl From<&WindowManager> for State {
                         .workspaces()
                         .iter()
                         .map(|workspace| Workspace {
+                            native_desktop_id: workspace.native_desktop_id,
                             name: workspace.name.clone(),
                             containers: workspace.containers.clone(),
                             monocle_container: workspace.monocle_container.clone(),

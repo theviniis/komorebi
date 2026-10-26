@@ -1,0 +1,161 @@
+--- a/komorebi/src/window_manager.rs
++++ b/komorebi/src/window_manager.rs
+@@ -91,6 +91,7 @@
+     pub pending_move_op: Arc<Option<(usize, usize, isize)>>,
+     pub already_moved_window_handles: Arc<Mutex<HashSet<isize>>>,
+     pub known_hwnds: HashMap<isize, (usize, usize)>,
++    pub window_desktops: HashMap<isize, usize>,
+     /// The index of the currently focused native desktop (global across all monitors).
+     ///
+     /// Invariant: every monitor has `workspaces().len() == desktop_count`, and
+@@ -179,6 +180,7 @@
+             pending_move_op: Arc::new(None),
+             already_moved_window_handles: Arc::new(Mutex::new(HashSet::new())),
+             known_hwnds: HashMap::new(),
++            window_desktops: HashMap::new(),
+             focused_desktop_idx: 0,
+             desktop_count: 1,
+             workspace_names: HashMap::new(),
+@@ -3883,9 +3885,12 @@
+     /// desktop being left and uncloaks windows on the desktop being entered. These
+     /// cloak events should not trigger komorebi's reconciliation logic.
+     pub fn is_desktop_transition_cloak(&self, window: Window) -> bool {
+-        let window_desktop = crate::virtual_desktop::backend()
+-            .desktop_idx_for_window(window.hwnd)
+-            .ok();
++        // First check our tracked state, then fall back to backend
++        let window_desktop = self.window_desktops.get(&window.hwnd).copied().or_else(|| {
++            crate::virtual_desktop::backend()
++                .desktop_idx_for_window(window.hwnd)
++                .ok()
++        });
+         window_desktop != Some(self.focused_desktop_idx)
+     }
+ 
+@@ -3893,10 +3898,13 @@
+     /// than the currently focused one. This is used to prevent reaping or reconciling
+     /// windows that are on other desktops.
+     pub fn is_window_on_other_desktop(&self, hwnd: isize) -> bool {
+-        crate::virtual_desktop::backend()
+-            .desktop_idx_for_window(hwnd)
+-            .ok()
+-            .is_some_and(|i| i != self.focused_desktop_idx)
++        // First check our tracked state, then fall back to backend
++        let window_desktop = self.window_desktops.get(&hwnd).copied().or_else(|| {
++            crate::virtual_desktop::backend()
++                .desktop_idx_for_window(hwnd)
++                .ok()
++        });
++        window_desktop.is_some_and(|i| i != self.focused_desktop_idx)
+     }
+ 
+     pub fn focused_workspace_for_monitor_idx(&self, idx: usize) -> eyre::Result<&Workspace> {
+@@ -4012,9 +4020,39 @@
+     /// any window manager state — it only reports where the window "belongs".
+     #[tracing::instrument(skip(self))]
+     pub fn desktop_idx_for_new_window(&mut self, window: Window) -> eyre::Result<usize> {
+-        let idx = crate::virtual_desktop::backend().desktop_idx_for_window(window.hwnd)?;
+-        let clamped = idx.min(self.desktop_count.saturating_sub(1));
+-        Ok(clamped)
++        let hwnd = window.hwnd;
++
++        // If we've seen this window before, use our tracked desktop
++        if let Some(&tracked_desktop) = self.window_desktops.get(&hwnd) {
++            tracing::debug!(
++                "Using tracked desktop {} for window {}",
++                tracked_desktop,
++                hwnd
++            );
++            return Ok(tracked_desktop.min(self.desktop_count.saturating_sub(1)));
++        }
++
++        // Query the backend for windows we haven't tracked yet
++        // This works for the fake backend in tests, and for real WinVD on first sight
++        if let Ok(idx) = crate::virtual_desktop::backend().desktop_idx_for_window(hwnd) {
++            let clamped = idx.min(self.desktop_count.saturating_sub(1));
++            // Track this window's desktop for future reference
++            self.window_desktops.insert(hwnd, clamped);
++            tracing::debug!(
++                "Backend reports window {} on desktop {}, tracking it",
++                hwnd,
++                clamped
++            );
++            return Ok(clamped);
++        }
++
++        // Fallback for a failed native query, not for successfully returned stale data.
++        tracing::debug!(
++            "New window {}, using focused desktop {}",
++            hwnd,
++            self.focused_desktop_idx
++        );
++        Ok(self.focused_desktop_idx)
+     }
+ 
+     #[tracing::instrument(skip(self))]
+@@ -4074,29 +4112,37 @@
+     pub fn update_known_hwnds(&mut self) {
+         tracing::trace!("updating list of known hwnds");
+         let mut known_hwnds = HashMap::new();
++        let mut window_desktops = HashMap::new();
+         for (m_idx, monitor) in self.monitors().iter().enumerate() {
+             for (w_idx, workspace) in monitor.workspaces().iter().enumerate() {
+                 for container in workspace.containers() {
+                     for window in container.windows() {
+                         known_hwnds.insert(window.hwnd, (m_idx, w_idx));
++                        window_desktops.insert(window.hwnd, w_idx);
+                     }
+                 }
+ 
+                 for window in workspace.floating_windows() {
+                     known_hwnds.insert(window.hwnd, (m_idx, w_idx));
++                    window_desktops.insert(window.hwnd, w_idx);
+                 }
+ 
+                 if let Some(window) = workspace.maximized_window {
+                     known_hwnds.insert(window.hwnd, (m_idx, w_idx));
++                    window_desktops.insert(window.hwnd, w_idx);
+                 }
+ 
+                 if let Some(container) = &workspace.monocle_container {
+                     for window in container.windows() {
+                         known_hwnds.insert(window.hwnd, (m_idx, w_idx));
++                        window_desktops.insert(window.hwnd, w_idx);
+                     }
+                 }
+             }
+         }
++
++        // Update our tracked window desktops
++        self.window_desktops = window_desktops;
+ 
+         if self.known_hwnds != known_hwnds {
+             // Update reaper cache
+--- a/komorebi/src/static_config.rs
++++ b/komorebi/src/static_config.rs
+@@ -1374,6 +1374,7 @@
+             pending_move_op: Arc::new(None),
+             already_moved_window_handles: Arc::new(Mutex::new(HashSet::new())),
+             known_hwnds: HashMap::new(),
++            window_desktops: HashMap::new(),
+             focused_desktop_idx: 0,
+             desktop_count: 1,
+             workspace_names: HashMap::new(),
+--- a/komorebi/src/monitor_reconciliator/mod.rs
++++ b/komorebi/src/monitor_reconciliator/mod.rs
+@@ -1294,3 +1294,15 @@
+         }
+     }
+ }
++
++#[cfg(test)]
++mod channel_race_diagnostic {
++    #[test]
++    fn competing_global_receiver_steals_notification() {
++        let receiver = super::event_rx();
++        let thief = std::thread::spawn(move || receiver.recv_timeout(std::time::Duration::from_secs(2)).unwrap());
++        super::send_notification(super::MonitorNotification::ResolutionScalingChanged);
++        assert_eq!(thief.join().unwrap(), super::MonitorNotification::ResolutionScalingChanged);
++        assert!(super::event_rx().try_recv().is_err(), "the test consumer has no message after the competing listener consumed it");
++    }
++}

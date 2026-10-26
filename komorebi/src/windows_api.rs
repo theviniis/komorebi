@@ -1524,3 +1524,217 @@ impl WindowsApi {
         .process()
     }
 }
+
+/// Window attributes needed to evaluate placement rules without querying Win32 in tests.
+#[derive(Clone, Debug, Default)]
+pub struct WindowIdentifiers {
+    pub title: String,
+    pub exe: String,
+    pub class: String,
+    pub path: String,
+}
+
+/// Injectable Win32 operations used by desktop movement.
+pub trait WindowApi: Send + Sync + std::fmt::Debug {
+    fn enum_window_handles(&self) -> eyre::Result<Vec<isize>>;
+    fn is_window(&self, hwnd: isize) -> bool;
+    fn focus_window(&self, window: Window, mouse: bool) -> eyre::Result<()>;
+    fn foreground_window(&self) -> eyre::Result<isize>;
+    fn identifiers(&self, window: crate::window::Window) -> eyre::Result<WindowIdentifiers>;
+    fn center_window(
+        &self,
+        window: crate::window::Window,
+        area: &Rect,
+        resize: bool,
+    ) -> eyre::Result<()>;
+    fn move_window_to_area(
+        &self,
+        window: crate::window::Window,
+        origin: &Rect,
+        target: &Rect,
+    ) -> eyre::Result<()>;
+    fn refresh_stack(&self, container: &mut crate::container::Container);
+    fn append_to_stack(
+        &self,
+        container: &mut crate::container::Container,
+        window: crate::window::Window,
+    );
+    fn restore_window(&self, window: crate::window::Window);
+
+    fn monitor_from_window(&self, hwnd: isize) -> isize;
+    fn should_manage(
+        &self,
+        window: crate::window::Window,
+        event: crate::window_manager_event::WindowManagerEvent,
+        debug: &mut crate::window::RuleDebug,
+    ) -> eyre::Result<bool>;
+}
+
+#[derive(Debug, Default)]
+pub struct RealWindowsApi;
+
+impl WindowApi for RealWindowsApi {
+    fn focus_window(&self, window: Window, mouse: bool) -> eyre::Result<()> {
+        window.focus(mouse)
+    }
+    fn enum_window_handles(&self) -> eyre::Result<Vec<isize>> {
+        unsafe extern "system" fn collect(hwnd: HWND, data: LPARAM) -> windows_core::BOOL {
+            let windows = unsafe { &mut *(data.0 as *mut Vec<isize>) };
+            windows.push(hwnd.0 as isize);
+            true.into()
+        }
+        let mut windows = Vec::new();
+        WindowsApi::enum_windows(Some(collect), &mut windows as *mut Vec<isize> as isize)?;
+        Ok(windows)
+    }
+
+    fn is_window(&self, hwnd: isize) -> bool {
+        WindowsApi::is_window(hwnd)
+    }
+    fn append_to_stack(
+        &self,
+        container: &mut crate::container::Container,
+        window: crate::window::Window,
+    ) {
+        container.add_window(window);
+    }
+    fn identifiers(&self, window: crate::window::Window) -> eyre::Result<WindowIdentifiers> {
+        Ok(WindowIdentifiers {
+            title: window.title()?,
+            exe: window.exe()?,
+            class: window.class()?,
+            path: window.path()?,
+        })
+    }
+    fn center_window(
+        &self,
+        mut window: crate::window::Window,
+        area: &Rect,
+        resize: bool,
+    ) -> eyre::Result<()> {
+        window.center(area, resize)
+    }
+    fn move_window_to_area(
+        &self,
+        mut window: crate::window::Window,
+        origin: &Rect,
+        target: &Rect,
+    ) -> eyre::Result<()> {
+        window.move_to_area(origin, target)
+    }
+    fn refresh_stack(&self, container: &mut crate::container::Container) {
+        container.load_focused_window();
+    }
+    fn restore_window(&self, window: crate::window::Window) {
+        window.restore();
+    }
+
+    fn foreground_window(&self) -> eyre::Result<isize> {
+        WindowsApi::foreground_window()
+    }
+    fn monitor_from_window(&self, hwnd: isize) -> isize {
+        WindowsApi::monitor_from_window(hwnd)
+    }
+    fn should_manage(
+        &self,
+        window: crate::window::Window,
+        event: crate::window_manager_event::WindowManagerEvent,
+        debug: &mut crate::window::RuleDebug,
+    ) -> eyre::Result<bool> {
+        window.should_manage(Some(event), debug)
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub struct FakeWindowApi {
+    pub foreground_hwnd: isize,
+    pub monitor_handle: isize,
+    pub window_monitors: std::collections::HashMap<isize, isize>,
+    pub enumerated_windows: Vec<isize>,
+    pub manage_windows: bool,
+    pub invalid_hwnds: std::collections::HashSet<isize>,
+    pub identifiers: Option<WindowIdentifiers>,
+    pub fail_center: bool,
+    pub fail_area_move: bool,
+    pub effects: parking_lot::Mutex<Vec<(&'static str, isize)>>,
+}
+
+#[cfg(test)]
+impl WindowApi for FakeWindowApi {
+    fn focus_window(&self, window: Window, _mouse: bool) -> eyre::Result<()> {
+        self.effects.lock().push(("focus", window.hwnd));
+        Ok(())
+    }
+
+    fn enum_window_handles(&self) -> eyre::Result<Vec<isize>> {
+        Ok(self.enumerated_windows.clone())
+    }
+
+    fn is_window(&self, hwnd: isize) -> bool {
+        !self.invalid_hwnds.contains(&hwnd)
+    }
+    fn append_to_stack(
+        &self,
+        container: &mut crate::container::Container,
+        window: crate::window::Window,
+    ) {
+        self.effects.lock().push(("append", window.hwnd));
+        container.add_window_without_visibility_changes(window);
+    }
+    fn identifiers(&self, _window: crate::window::Window) -> eyre::Result<WindowIdentifiers> {
+        self.identifiers
+            .clone()
+            .ok_or_else(|| eyre::eyre!("no fake window identifiers configured"))
+    }
+    fn center_window(
+        &self,
+        window: crate::window::Window,
+        _area: &Rect,
+        _resize: bool,
+    ) -> eyre::Result<()> {
+        self.effects.lock().push(("center", window.hwnd));
+        if self.fail_center {
+            eyre::bail!("injected centering failure");
+        }
+        Ok(())
+    }
+    fn move_window_to_area(
+        &self,
+        window: crate::window::Window,
+        _origin: &Rect,
+        _target: &Rect,
+    ) -> eyre::Result<()> {
+        self.effects.lock().push(("move_area", window.hwnd));
+        if self.fail_area_move {
+            eyre::bail!("injected monitor movement failure");
+        }
+        Ok(())
+    }
+    fn refresh_stack(&self, container: &mut crate::container::Container) {
+        self.effects
+            .lock()
+            .push(("stack", container.focused_window().map_or(0, |w| w.hwnd)));
+    }
+    fn restore_window(&self, window: crate::window::Window) {
+        self.effects.lock().push(("restore", window.hwnd));
+    }
+
+    fn foreground_window(&self) -> eyre::Result<isize> {
+        Ok(self.foreground_hwnd)
+    }
+    fn monitor_from_window(&self, hwnd: isize) -> isize {
+        self.window_monitors
+            .get(&hwnd)
+            .copied()
+            .unwrap_or(self.monitor_handle)
+    }
+    fn should_manage(
+        &self,
+        _window: crate::window::Window,
+        _event: crate::window_manager_event::WindowManagerEvent,
+        _debug: &mut crate::window::RuleDebug,
+    ) -> eyre::Result<bool> {
+        Ok(self.manage_windows)
+    }
+}

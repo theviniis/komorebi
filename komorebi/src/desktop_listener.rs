@@ -1,7 +1,7 @@
 //! Desktop event listener that bridges native Windows virtual desktop events
 //! to komorebi's window manager event system.
 
-use crate::virtual_desktop::{spawn_event_thread, DesktopEventKind};
+use crate::virtual_desktop::{DesktopEventKind, spawn_event_thread};
 use crate::window_manager_event::WindowManagerEvent;
 use color_eyre::eyre;
 use crossbeam_channel::Sender;
@@ -15,6 +15,9 @@ pub fn listen_for_desktop_events(tx: Sender<WindowManagerEvent>) -> eyre::Result
                 WindowManagerEvent::DesktopChanged { new, old }
             }
             DesktopEventKind::CountChanged => WindowManagerEvent::DesktopCountChanged,
+            DesktopEventKind::WindowChanged { hwnd } => {
+                WindowManagerEvent::WindowDesktopChanged { hwnd }
+            }
             DesktopEventKind::Moved { desktop, old, new } => {
                 WindowManagerEvent::DesktopMoved { desktop, old, new }
             }

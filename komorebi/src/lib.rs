@@ -7,6 +7,7 @@ pub mod com;
 pub mod ring;
 pub mod container;
 pub mod core;
+pub mod desktop_listener;
 pub mod focus_manager;
 pub mod lockable_sequence;
 pub mod monitor;
@@ -25,7 +26,6 @@ pub mod theme_manager;
 pub mod transparency_manager;
 pub mod version_gate;
 pub mod virtual_desktop;
-pub mod desktop_listener;
 pub mod window;
 pub mod window_manager;
 pub mod window_manager_event;
@@ -211,7 +211,19 @@ lazy_static! {
             home
         })
     };
-    pub static ref DATA_DIR: PathBuf = dirs::data_local_dir().expect("there is no local data directory").join("komorebi");
+    pub static ref DATA_DIR: PathBuf = {
+        // Unit tests must not overwrite the live daemon's HWND recovery file or sockets.
+        #[cfg(test)]
+        {
+            let path = std::env::temp_dir().join(format!("kmt-{}", std::process::id()));
+            std::fs::create_dir_all(&path).expect("could not create isolated test data directory");
+            path
+        }
+        #[cfg(not(test))]
+        {
+            dirs::data_local_dir().expect("there is no local data directory").join("komorebi")
+        }
+    };
     pub static ref AHK_EXE: String = {
         let mut ahk: String = String::from("autohotkey.exe");
 
@@ -416,4 +428,76 @@ pub fn load_configuration() -> eyre::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) struct TestEnvGuard(&'static str, Option<std::ffi::OsString>);
+
+#[cfg(test)]
+impl TestEnvGuard {
+    pub(crate) fn set(key: &'static str, value: &str) -> Self {
+        let guard = Self(key, std::env::var_os(key));
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        guard
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestEnvGuard {
+    fn drop(&mut self) {
+        unsafe {
+            match &self.1 {
+                Some(value) => std::env::set_var(self.0, value),
+                None => std::env::remove_var(self.0),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod test_environment {
+    #[test]
+    fn restores_userprofile_after_unwind() {
+        let original = std::env::var_os("USERPROFILE");
+        assert!(
+            std::panic::catch_unwind(|| {
+                let _guard = super::TestEnvGuard::set("USERPROFILE", "C:\\Users\\test-guard");
+                panic!("exercise environment guard unwind");
+            })
+            .is_err()
+        );
+        assert_eq!(std::env::var_os("USERPROFILE"), original);
+    }
+}
+
+
+/// Process the startup update directly: enqueueing it can deadlock a consumer
+/// whose bounded queue was filled before its worker started.
+pub(crate) fn notifications_with_initial<T>(
+    receiver: crossbeam_channel::Receiver<T>,
+    initial: T,
+) -> impl Iterator<Item = T> {
+    std::iter::once(initial).chain(receiver)
+}
+
+#[cfg(test)]
+mod notification_startup_tests {
+    #[test]
+    fn initial_update_runs_with_empty_or_full_queue_without_losing_pending_updates() {
+        for capacity in [1, 20, 50] {
+            for pending in [0, capacity] {
+                let (sender, receiver) = crossbeam_channel::bounded(capacity);
+                for value in 0..pending {
+                    sender.try_send(value).unwrap();
+                }
+                drop(sender);
+                let updates = super::notifications_with_initial(receiver, usize::MAX)
+                    .collect::<Vec<_>>();
+                let expected = std::iter::once(usize::MAX).chain(0..pending).collect::<Vec<_>>();
+                assert_eq!(updates, expected);
+            }
+        }
+    }
 }

@@ -1215,36 +1215,36 @@ enum SubCommand {
     /// Focus the specified workspace on the focused monitor
     #[clap(arg_required_else_help = true)]
     FocusWorkspace(FocusWorkspace),
-    /// Focus the specified workspace on all monitors
+    /// Focus the specified native desktop globally (alias of focus-workspace)
     #[clap(arg_required_else_help = true)]
     FocusWorkspaces(FocusWorkspaces),
-    /// Focus the specified workspace on the target monitor
+    /// Focus the target monitor and switch the native desktop globally
     #[clap(arg_required_else_help = true)]
     FocusMonitorWorkspace(FocusMonitorWorkspace),
     /// Focus the specified workspace
     #[clap(arg_required_else_help = true)]
     FocusNamedWorkspace(FocusNamedWorkspace),
-    /// Close the focused workspace (must be empty and unnamed)
+    /// Compatibility no-op: remove native desktops in Windows Task View
     CloseWorkspace,
     /// Focus the monitor in the given cycle direction
     #[clap(arg_required_else_help = true)]
     CycleMonitor(CycleMonitor),
-    /// Focus the workspace in the given cycle direction
+    /// Focus the adjacent native desktop; stop at the first or last desktop
     #[clap(arg_required_else_help = true)]
     CycleWorkspace(CycleWorkspace),
     /// Focus the next empty workspace in the given cycle direction (if one exists)
     #[clap(arg_required_else_help = true)]
     CycleEmptyWorkspace(CycleWorkspace),
-    /// Move the focused workspace to the specified monitor
+    /// Unsupported with native desktops; returns an explanatory error
     #[clap(arg_required_else_help = true)]
     MoveWorkspaceToMonitor(MoveWorkspaceToMonitor),
-    /// Move the focused workspace monitor in the given cycle direction
+    /// Unsupported with native desktops; returns an explanatory error
     #[clap(arg_required_else_help = true)]
     CycleMoveWorkspaceToMonitor(CycleMoveWorkspaceToMonitor),
-    /// Swap focused monitor workspaces with specified monitor
+    /// Unsupported with native desktops; returns an explanatory error
     #[clap(arg_required_else_help = true, hide = true)]
     SwapWorkspacesWithMonitor(SwapWorkspacesWithMonitor),
-    /// Create and append a new workspace on the focused monitor
+    /// Compatibility no-op: create native desktops in Windows Task View
     NewWorkspace,
     /// Set the resize delta (used by resize-edge and resize-axis)
     #[clap(arg_required_else_help = true)]
@@ -1309,10 +1309,10 @@ enum SubCommand {
     /// Set the display index preference for a monitor identified using its display name
     #[clap(arg_required_else_help = true)]
     DisplayIndexPreference(DisplayIndexPreference),
-    /// Create at least this many workspaces for the specified monitor
+    /// Compatibility no-op: the native desktop count is managed in Task View
     #[clap(arg_required_else_help = true)]
     EnsureWorkspaces(EnsureWorkspaces),
-    /// Create these many named workspaces for the specified monitor
+    /// Compatibility no-op: create and name native desktops in Task View
     #[clap(arg_required_else_help = true)]
     EnsureNamedWorkspaces(EnsureNamedWorkspaces),
     /// Set the container padding for the specified workspace

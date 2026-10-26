@@ -4,12 +4,12 @@ use std::fmt::Formatter;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::window::should_act;
-use crate::window::Window;
-use crate::winevent::WinEvent;
 use crate::OBJECT_NAME_CHANGE_ON_LAUNCH;
 use crate::OBJECT_NAME_CHANGE_TITLE_IGNORE_LIST;
 use crate::REGEX_IDENTIFIERS;
+use crate::window::Window;
+use crate::window::should_act;
+use crate::winevent::WinEvent;
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -34,6 +34,9 @@ pub enum WindowManagerEvent {
         old: usize,
     },
     DesktopCountChanged,
+    WindowDesktopChanged {
+        hwnd: isize,
+    },
     DesktopMoved {
         desktop: usize,
         old: usize,
@@ -98,6 +101,7 @@ impl Display for WindowManagerEvent {
             Self::DesktopCountChanged => {
                 write!(f, "DesktopCountChanged")
             }
+            Self::WindowDesktopChanged { hwnd } => write!(f, "WindowDesktopChanged (hwnd: {hwnd})"),
             Self::DesktopMoved { desktop, old, new } => {
                 write!(
                     f,
@@ -114,6 +118,7 @@ impl Display for WindowManagerEvent {
 impl WindowManagerEvent {
     pub fn window(self) -> Window {
         match self {
+            Self::WindowDesktopChanged { hwnd } => Window::from(hwnd),
             Self::Destroy(_, window)
             | Self::FocusChange(_, window)
             | Self::Hide(_, window)
@@ -157,6 +162,7 @@ impl WindowManagerEvent {
             WindowManagerEvent::TitleUpdate(_, _) => "TitleUpdate",
             WindowManagerEvent::DesktopChanged { .. } => "DesktopChanged",
             WindowManagerEvent::DesktopCountChanged => "DesktopCountChanged",
+            WindowManagerEvent::WindowDesktopChanged { .. } => "WindowDesktopChanged",
             WindowManagerEvent::DesktopMoved { .. } => "DesktopMoved",
             WindowManagerEvent::DesktopRenamed { .. } => "DesktopRenamed",
         }
@@ -180,6 +186,7 @@ impl WindowManagerEvent {
             | WindowManagerEvent::Raise(_)
             | WindowManagerEvent::DesktopChanged { .. }
             | WindowManagerEvent::DesktopCountChanged
+            | WindowManagerEvent::WindowDesktopChanged { .. }
             | WindowManagerEvent::DesktopMoved { .. }
             | WindowManagerEvent::DesktopRenamed { .. } => None,
         }

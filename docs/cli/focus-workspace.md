@@ -6,11 +6,9 @@ Focus the specified workspace on the focused monitor
 Usage: komorebic.exe focus-workspace <TARGET>
 
 Arguments:
-  <TARGET>
-          Target index (zero-indexed)
+  <TARGET>  Target index (zero-indexed)
 
 Options:
-  -h, --help
-          Print help
+  -h, --help  Print help
 
 ```

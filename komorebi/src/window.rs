@@ -1038,6 +1038,25 @@ impl Window {
             allow_cloaked = true;
         }
 
+        if is_cloaked
+            && matches!(
+                event,
+                Some(
+                    WindowManagerEvent::Manage(_)
+                        | WindowManagerEvent::Show(..)
+                        | WindowManagerEvent::Uncloak(..)
+                )
+            )
+        {
+            let backend = crate::virtual_desktop::backend();
+            if let (Ok(window), Ok(current)) = (
+                backend.desktop_id_for_window(self.hwnd),
+                backend.current_desktop_id(),
+            ) {
+                allow_cloaked |= window != current;
+            }
+        }
+
         debug.allow_cloaked = allow_cloaked;
 
         match (allow_cloaked, is_cloaked) {

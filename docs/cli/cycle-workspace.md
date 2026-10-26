@@ -1,16 +1,14 @@
 # cycle-workspace
 
 ```
-Focus the workspace in the given cycle direction
+Focus the adjacent native desktop; stop at the first or last desktop
 
 Usage: komorebic.exe cycle-workspace <CYCLE_DIRECTION>
 
 Arguments:
-  <CYCLE_DIRECTION>
-          [possible values: previous, next]
+  <CYCLE_DIRECTION>  [possible values: previous, next]
 
 Options:
-  -h, --help
-          Print help
+  -h, --help  Print help
 
 ```

@@ -1,12 +1,11 @@
 # close-workspace
 
 ```
-Close the focused workspace (must be empty and unnamed)
+Compatibility no-op: remove native desktops in Windows Task View
 
 Usage: komorebic.exe close-workspace
 
 Options:
-  -h, --help
-          Print help
+  -h, --help  Print help
 
 ```

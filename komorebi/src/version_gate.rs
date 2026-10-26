@@ -14,19 +14,20 @@ pub fn is_supported_build(build: u32, ubr: u32) -> bool {
 
 pub fn require_supported_windows() -> eyre::Result<()> {
     match read_build() {
-        Ok((build, ubr)) => {
-            if is_supported_build(build, ubr) {
-                Ok(())
-            } else {
-                eyre::bail!(
-                    "komorebi requires Windows 11 24H2 or newer (minimum build {MIN_BUILD}.{MIN_UBR}); detected build {build}.{ubr}"
-                )
-            }
-        }
+        Ok((build, ubr)) => require_build(build, ubr),
         Err(error) => eyre::bail!(
             "komorebi requires Windows 11 24H2 or newer (minimum build {MIN_BUILD}.{MIN_UBR}); could not detect the current build: {error}"
         ),
     }
+}
+
+pub(crate) fn require_build(build: u32, ubr: u32) -> eyre::Result<()> {
+    if is_supported_build(build, ubr) {
+        return Ok(());
+    }
+    eyre::bail!(
+        "komorebi requires Windows 11 24H2 or newer (minimum build {MIN_BUILD}.{MIN_UBR}); detected build {build}.{ubr}"
+    )
 }
 
 fn read_build() -> eyre::Result<(u32, u32)> {
@@ -47,5 +48,9 @@ mod tests {
         assert!(!is_supported_build(26100, 2604));
         assert!(!is_supported_build(26099, 9999));
         assert!(is_supported_build(26200, 0));
+        let error = require_build(26100, 2604).unwrap_err().to_string();
+        assert!(error.contains("26100.2605"));
+        assert!(error.contains("26100.2604"));
+        assert!(require_build(26100, 2605).is_ok());
     }
 }

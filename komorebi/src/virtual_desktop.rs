@@ -9,14 +9,60 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use windows_058::Win32::Foundation::HWND as WinvdHwnd;
 
+/// Stable native identity; indices are only positions in a snapshot.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct DesktopId(pub u128);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DesktopInfo {
+    pub id: DesktopId,
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DesktopSnapshot {
+    pub desktops: Vec<DesktopInfo>,
+    pub current: DesktopId,
+}
+
 pub trait DesktopBackend: Send + Sync {
+    fn snapshot(&self) -> eyre::Result<DesktopSnapshot>;
+    fn current_desktop_id(&self) -> eyre::Result<DesktopId>;
+    fn desktop_id_for_window(&self, hwnd: isize) -> eyre::Result<DesktopId>;
     fn desktop_count(&self) -> eyre::Result<usize>;
     fn current_desktop_idx(&self) -> eyre::Result<usize>;
     fn switch_desktop(&self, idx: usize) -> eyre::Result<()>;
+    fn switch_desktop_id(&self, id: DesktopId) -> eyre::Result<()> {
+        let snapshot = self.snapshot()?;
+        let idx = snapshot
+            .desktops
+            .iter()
+            .position(|d| d.id == id)
+            .ok_or_else(|| eyre::eyre!("desktop identity no longer exists"))?;
+        self.switch_desktop(idx)
+    }
+    fn move_window_to_desktop_id(&self, hwnd: isize, id: DesktopId) -> eyre::Result<()> {
+        let snapshot = self.snapshot()?;
+        let idx = snapshot
+            .desktops
+            .iter()
+            .position(|d| d.id == id)
+            .ok_or_else(|| eyre::eyre!("desktop identity no longer exists"))?;
+        self.move_window_to_desktop(hwnd, idx)
+    }
     fn desktop_idx_for_window(&self, hwnd: isize) -> eyre::Result<usize>;
     fn move_window_to_desktop(&self, hwnd: isize, idx: usize) -> eyre::Result<()>;
     fn desktop_name(&self, idx: usize) -> eyre::Result<Option<String>>;
     fn set_desktop_name(&self, idx: usize, name: &str) -> eyre::Result<()>;
+    fn set_desktop_name_id(&self, id: DesktopId, name: &str) -> eyre::Result<()> {
+        let snapshot = self.snapshot()?;
+        let idx = snapshot
+            .desktops
+            .iter()
+            .position(|d| d.id == id)
+            .ok_or_else(|| eyre::eyre!("desktop identity no longer exists"))?;
+        self.set_desktop_name(idx, name)
+    }
 }
 
 /// Real backend, delegating to `winvd`.
@@ -74,6 +120,75 @@ fn winvd_hwnd(hwnd: isize) -> WinvdHwnd {
 }
 
 impl DesktopBackend for WinvdBackend {
+    fn set_desktop_name_id(&self, id: DesktopId, name: &str) -> eyre::Result<()> {
+        winvd::get_desktop(windows_058::core::GUID::from_u128(id.0))
+            .set_name(name)
+            .map_err(|e| winvd_error("failed to name desktop by identity", e))
+    }
+
+    fn switch_desktop_id(&self, id: DesktopId) -> eyre::Result<()> {
+        winvd::switch_desktop(windows_058::core::GUID::from_u128(id.0))
+            .map_err(|e| winvd_error("failed to switch desktop by identity", e))
+    }
+    fn move_window_to_desktop_id(&self, hwnd: isize, id: DesktopId) -> eyre::Result<()> {
+        winvd::move_window_to_desktop(windows_058::core::GUID::from_u128(id.0), &winvd_hwnd(hwnd))
+            .map_err(|e| winvd_error("failed to move window by desktop identity", e))
+    }
+
+    fn current_desktop_id(&self) -> eyre::Result<DesktopId> {
+        winvd::get_current_desktop()
+            .and_then(|d| d.get_id())
+            .map(|id| DesktopId(id.to_u128()))
+            .map_err(|e| winvd_error("failed to identify current desktop", e))
+    }
+
+    fn snapshot(&self) -> eyre::Result<DesktopSnapshot> {
+        // Retry a changing native list instead of mixing positions from different orders.
+        for _ in 0..3 {
+            let read = || -> Result<Vec<DesktopInfo>, winvd::Error> {
+                winvd::get_desktops()?
+                    .into_iter()
+                    .map(|desktop| {
+                        let id = DesktopId(desktop.get_id()?.to_u128());
+                        let name = desktop.get_name()?;
+                        Ok(DesktopInfo {
+                            id,
+                            name: (!name.is_empty()).then_some(name),
+                        })
+                    })
+                    .collect()
+            };
+            let desktops = read().map_err(|e| winvd_error("failed to list desktops", e))?;
+            let current = DesktopId(
+                winvd::get_current_desktop()
+                    .and_then(|d| d.get_id())
+                    .map_err(|e| winvd_error("failed to identify current desktop", e))?
+                    .to_u128(),
+            );
+            let verified = read().map_err(|e| winvd_error("failed to verify desktop list", e))?;
+            let verified_current = DesktopId(
+                winvd::get_current_desktop()
+                    .and_then(|d| d.get_id())
+                    .map_err(|e| winvd_error("failed to verify current desktop", e))?
+                    .to_u128(),
+            );
+            if desktops == verified
+                && current == verified_current
+                && desktops.iter().any(|d| d.id == current)
+            {
+                return Ok(DesktopSnapshot { desktops, current });
+            }
+        }
+        eyre::bail!("native desktop list changed while reading its snapshot")
+    }
+
+    fn desktop_id_for_window(&self, hwnd: isize) -> eyre::Result<DesktopId> {
+        winvd::get_desktop_by_window(winvd_hwnd(hwnd))
+            .and_then(|d| d.get_id())
+            .map(|id| DesktopId(id.to_u128()))
+            .map_err(|e| winvd_error("failed to identify window desktop", e))
+    }
+
     fn desktop_count(&self) -> eyre::Result<usize> {
         winvd::get_desktop_count()
             .map(desktop_idx_from_winvd)
@@ -141,6 +256,9 @@ pub enum DesktopEventKind {
         old: usize,
     },
     CountChanged,
+    WindowChanged {
+        hwnd: isize,
+    },
     Moved {
         /// The desktop's new index. Always equal to `new`; it exists as a named
         /// field for ergonomics at call sites.
@@ -198,8 +316,8 @@ pub fn spawn_event_thread(cb: impl Fn(DesktopEventKind) + Send + 'static) -> eyr
 fn desktop_event_kind(event: winvd::DesktopEvent) -> Option<DesktopEventKind> {
     match event {
         winvd::DesktopEvent::DesktopChanged { new, old } => Some(DesktopEventKind::Changed {
-            new: event_desktop_idx(&new)?,
-            old: event_desktop_idx(&old)?,
+            new: event_desktop_idx(&new).unwrap_or_default(),
+            old: event_desktop_idx(&old).unwrap_or_default(),
         }),
         winvd::DesktopEvent::DesktopCreated(_) | winvd::DesktopEvent::DesktopDestroyed { .. } => {
             Some(DesktopEventKind::CountChanged)
@@ -221,10 +339,12 @@ fn desktop_event_kind(event: winvd::DesktopEvent) -> Option<DesktopEventKind> {
             })
         }
         winvd::DesktopEvent::DesktopNameChanged(desktop, _) => Some(DesktopEventKind::Renamed {
-            desktop: event_desktop_idx(&desktop)?,
+            desktop: event_desktop_idx(&desktop).unwrap_or_default(),
         }),
-        winvd::DesktopEvent::DesktopWallpaperChanged(..)
-        | winvd::DesktopEvent::WindowChanged(_) => None,
+        winvd::DesktopEvent::WindowChanged(hwnd) => Some(DesktopEventKind::WindowChanged {
+            hwnd: hwnd.0 as isize,
+        }),
+        winvd::DesktopEvent::DesktopWallpaperChanged(..) => None,
     }
 }
 
@@ -246,16 +366,21 @@ pub mod testing {
     #[derive(Debug, Default)]
     struct FakeState {
         current: usize,
+        ids: Vec<DesktopId>,
+        next_id: u128,
+        snapshot_override: Option<DesktopSnapshot>,
         switch_calls: usize,
         window_desktops: HashMap<isize, usize>,
         moved: Vec<(isize, usize)>,
         names: HashMap<usize, String>,
+        fail_move: Option<isize>,
+        fail_after_move: Option<isize>,
+        reorder_after_move: Option<(usize, usize)>,
     }
 
     /// In-memory [`DesktopBackend`] for tests.
     #[derive(Debug)]
     pub struct FakeDesktopBackend {
-        count: usize,
         state: Mutex<FakeState>,
     }
 
@@ -263,13 +388,102 @@ pub mod testing {
         #[must_use]
         pub fn new(count: usize) -> Self {
             Self {
-                count,
-                state: Mutex::new(FakeState::default()),
+                state: Mutex::new(FakeState {
+                    ids: (1..=count as u128).map(DesktopId).collect(),
+                    next_id: count as u128 + 1,
+                    ..Default::default()
+                }),
             }
         }
 
         pub fn set_window_desktop(&self, hwnd: isize, idx: usize) {
             self.state.lock().window_desktops.insert(hwnd, idx);
+        }
+
+        pub fn set_current_desktop(&self, idx: usize) {
+            self.ensure_desktop_exists(idx).unwrap();
+            self.state.lock().current = idx;
+        }
+
+        pub fn create_desktop(&self, idx: usize) -> DesktopId {
+            let mut state = self.state.lock();
+            let id = DesktopId(state.next_id);
+            state.next_id += 1;
+            state.ids.insert(idx, id);
+            if state.current >= idx {
+                state.current += 1;
+            }
+            for value in state.window_desktops.values_mut() {
+                if *value >= idx {
+                    *value += 1;
+                }
+            }
+            state.names = std::mem::take(&mut state.names)
+                .into_iter()
+                .map(|(i, n)| (if i >= idx { i + 1 } else { i }, n))
+                .collect();
+            id
+        }
+
+        pub fn move_desktop(&self, old: usize, new: usize) {
+            let mut state = self.state.lock();
+            let remap = |i: usize| {
+                if i == old {
+                    new
+                } else if old < new && i > old && i <= new {
+                    i - 1
+                } else if new < old && i >= new && i < old {
+                    i + 1
+                } else {
+                    i
+                }
+            };
+            let id = state.ids.remove(old);
+            state.ids.insert(new, id);
+            state.current = remap(state.current);
+            for value in state.window_desktops.values_mut() {
+                *value = remap(*value);
+            }
+            state.names = std::mem::take(&mut state.names)
+                .into_iter()
+                .map(|(i, n)| (remap(i), n))
+                .collect();
+        }
+
+        /// fallback is expressed in the order before removal, just as native identity is.
+        pub fn destroy_desktop(&self, idx: usize, fallback: usize) {
+            let mut state = self.state.lock();
+            assert!(state.ids.len() > 1 && idx != fallback);
+            let remap = |i: usize| {
+                let i = if i == idx { fallback } else { i };
+                if i > idx { i - 1 } else { i }
+            };
+            state.ids.remove(idx);
+            state.current = remap(state.current);
+            for value in state.window_desktops.values_mut() {
+                *value = remap(*value);
+            }
+            state.names = std::mem::take(&mut state.names)
+                .into_iter()
+                .filter(|(i, _)| *i != idx)
+                .map(|(i, n)| (remap(i), n))
+                .collect();
+        }
+
+        pub fn set_snapshot_override(&self, snapshot: Option<DesktopSnapshot>) {
+            self.state.lock().snapshot_override = snapshot;
+        }
+
+        pub fn reorder_after_next_move(&self, old: usize, new: usize) {
+            self.state.lock().reorder_after_move = Some((old, new));
+        }
+
+        pub fn fail_move_for(&self, hwnd: isize) {
+            self.state.lock().fail_move = Some(hwnd);
+        }
+
+        pub fn fail_after_move_for(&self, hwnd: isize) {
+            self.state.lock().fail_after_move = Some(hwnd);
         }
 
         #[must_use]
@@ -288,8 +502,9 @@ pub mod testing {
         }
 
         fn ensure_desktop_exists(&self, idx: usize) -> eyre::Result<()> {
-            if idx >= self.count {
-                eyre::bail!("desktop {idx} does not exist (count: {})", self.count);
+            let count = self.state.lock().ids.len();
+            if idx >= count {
+                eyre::bail!("desktop {idx} does not exist (count: {})", count);
             }
 
             Ok(())
@@ -297,8 +512,47 @@ pub mod testing {
     }
 
     impl DesktopBackend for FakeDesktopBackend {
+        fn current_desktop_id(&self) -> eyre::Result<DesktopId> {
+            let state = self.state.lock();
+            state
+                .ids
+                .get(state.current)
+                .copied()
+                .ok_or_else(|| eyre::eyre!("invalid fake current desktop"))
+        }
+        fn snapshot(&self) -> eyre::Result<DesktopSnapshot> {
+            let state = self.state.lock();
+            if let Some(snapshot) = &state.snapshot_override {
+                return Ok(snapshot.clone());
+            }
+            let current = *state
+                .ids
+                .get(state.current)
+                .ok_or_else(|| eyre::eyre!("invalid fake current desktop"))?;
+            Ok(DesktopSnapshot {
+                current,
+                desktops: state
+                    .ids
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &id)| DesktopInfo {
+                        id,
+                        name: state.names.get(&i).filter(|s| !s.is_empty()).cloned(),
+                    })
+                    .collect(),
+            })
+        }
+        fn desktop_id_for_window(&self, hwnd: isize) -> eyre::Result<DesktopId> {
+            let state = self.state.lock();
+            state
+                .window_desktops
+                .get(&hwnd)
+                .and_then(|&i| state.ids.get(i))
+                .copied()
+                .ok_or_else(|| eyre::eyre!("window {hwnd} is not on any desktop"))
+        }
         fn desktop_count(&self) -> eyre::Result<usize> {
-            Ok(self.count)
+            Ok(self.state.lock().ids.len())
         }
 
         fn current_desktop_idx(&self) -> eyre::Result<usize> {
@@ -328,8 +582,20 @@ pub mod testing {
             self.ensure_desktop_exists(idx)?;
 
             let mut state = self.state.lock();
+            if state.fail_move == Some(hwnd) {
+                eyre::bail!("injected move failure for {hwnd}");
+            }
             state.window_desktops.insert(hwnd, idx);
             state.moved.push((hwnd, idx));
+            let fail_after = state.fail_after_move == Some(hwnd);
+            let reorder = state.reorder_after_move.take();
+            drop(state);
+            if let Some((old, new)) = reorder {
+                self.move_desktop(old, new);
+            }
+            if fail_after {
+                eyre::bail!("injected error after native move for {hwnd}");
+            }
 
             Ok(())
         }
@@ -378,6 +644,33 @@ mod tests {
     use super::testing::*;
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn fake_native_lifecycle_keeps_identities_independent_from_indices() {
+        let fake = FakeDesktopBackend::new(3);
+        fake.set_window_desktop(9, 1);
+        fake.set_current_desktop(1);
+        fake.move_desktop(0, 2);
+        let snapshot = fake.snapshot().unwrap();
+        assert_eq!(
+            snapshot.desktops.iter().map(|d| d.id).collect::<Vec<_>>(),
+            vec![DesktopId(2), DesktopId(3), DesktopId(1)]
+        );
+        assert_eq!(snapshot.current, DesktopId(2));
+        assert_eq!(fake.desktop_id_for_window(9).unwrap(), DesktopId(2));
+        let created = fake.create_desktop(1);
+        assert_eq!(created, DesktopId(4));
+        fake.destroy_desktop(0, 2);
+        let snapshot = fake.snapshot().unwrap();
+        assert_eq!(
+            snapshot.desktops.iter().map(|d| d.id).collect::<Vec<_>>(),
+            vec![DesktopId(4), DesktopId(3), DesktopId(1)]
+        );
+        assert_eq!(snapshot.current, DesktopId(3));
+        assert_eq!(fake.desktop_id_for_window(9).unwrap(), DesktopId(3));
+        assert!(fake.moved().is_empty());
+        assert_eq!(fake.switch_calls(), 0);
+    }
 
     #[test]
     fn desktop_index_conversions_roundtrip() {
@@ -434,6 +727,10 @@ mod tests {
 
     #[test]
     fn desktop_events_are_translated_to_kinds() {
+        assert_eq!(
+            desktop_event_kind(winvd::DesktopEvent::WindowChanged(winvd_hwnd(42))),
+            Some(DesktopEventKind::WindowChanged { hwnd: 42 })
+        );
         assert_eq!(
             desktop_event_kind(winvd::DesktopEvent::DesktopMoved {
                 desktop: winvd::get_desktop(0),

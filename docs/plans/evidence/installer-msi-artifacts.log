@@ -1,0 +1,9 @@
+MSI product=komorebi version=0.1.42 platform=x64
+komorebi.exe size=14982144 sha256=d8a67073e41bc4c5208d4c403bfdfce9cb3ec9528a83ab8d4b6c4695e169691e payload matches release
+komorebic.exe size=10056704 sha256=71174e3a5d90417fd8eb8a4e5ed66c53c0fcfe4f460dbd2f2064a60d9de0d601 payload matches release
+komorebic-no-console.exe size=231936 sha256=e7e2840503fa9738c40a15855c53acac2eb21d948c463fab7d874f00f36775c9 payload matches release
+komorebi-gui.exe size=12733440 sha256=9cbbdc35b88c103c26bfa196fcfa848622d2fc16cf0442839727132328bb26a9 payload matches release
+komorebi-bar.exe size=26970112 sha256=4a133c7e05dcc55c576764621efa0334ca0ce89b956b299358b7740411e44f90 payload matches release
+komorebi-shortcuts.exe size=11306496 sha256=ef1a17e7b6614a800ec9cf0144641bbb1bdf47a6c3a793f25d664bb085fcc446 payload matches release
+MSI size=28262400 sha256=b550ad13180e2294eb573db88ac4e97cc68d021c689aaa9227fff3f5e0fef958
+Package generated, decompiled and extracted without installation. All six executables and license match source artifacts.
