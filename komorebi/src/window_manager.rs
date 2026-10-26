@@ -1872,6 +1872,20 @@ impl WindowManager {
         }
         // Publish coherent caches even if layout or focus subsequently fails.
         self.update_known_hwnds();
+        if monocle {
+            // Monocle hid the other source containers and floats. Restore only each
+            // stack's selected window, without focusing it or selecting a desktop.
+            // Do this before following the moved container to its destination.
+            let source = &self.monitors()[monitor_idx].workspaces()[source_idx];
+            for window in source
+                .containers()
+                .iter()
+                .filter_map(|container| container.focused_window())
+                .chain(source.floating_windows().iter())
+            {
+                self.window_api.restore_window(*window);
+            }
+        }
         self.update_desktop_workspace(monitor_idx, source_idx)?;
         self.update_desktop_workspace(target_monitor_idx, idx)?;
         if follow {
@@ -6452,6 +6466,47 @@ mod tests {
         assert_eq!(wm.known_hwnds.get(&11), Some(&(0, 2)));
         assert_eq!(wm.focused_desktop_idx, 2);
         assert_eq!(fake.switch_calls(), 1);
+    }
+
+    #[test]
+    fn desktop_move_of_monocle_restores_source_stack_selection_and_floats() {
+        for follow in [false, true] {
+            let (mut wm, fake, _ctx) = setup_window_manager_with_fake_desktops(2);
+            let api = Arc::new(crate::windows_api::FakeWindowApi {
+                foreground_hwnd: 10,
+                ..Default::default()
+            });
+            wm.window_api = api.clone();
+            let source = wm.focused_workspace_mut().unwrap();
+            source.new_container_for_window(Window::from(20));
+            source
+                .focused_container_mut()
+                .unwrap()
+                .add_window_without_visibility_changes(Window::from(21));
+            source.new_container_for_window(Window::from(30));
+            source.floating_windows_mut().push_back(Window::from(40));
+            let mut monocle = crate::container::Container::default();
+            monocle.add_window_without_visibility_changes(Window::from(10));
+            source.monocle_container = Some(monocle);
+            source.monocle_container_restore_idx = Some(0);
+
+            wm.move_container_to_workspace(1, follow, None).unwrap();
+
+            assert_eq!(fake.moved(), vec![(10, 1)]);
+            assert_eq!(
+                *api.effects.lock(),
+                vec![("restore", 21), ("restore", 30), ("restore", 40)]
+            );
+            let source = &wm.monitors()[0].workspaces()[0];
+            assert!(source.monocle_container.is_none());
+            assert_eq!(source.monocle_container_restore_idx, None);
+            assert!(source.contains_window(20));
+            assert!(source.contains_window(21));
+            assert!(!source.contains_window(10));
+            assert_eq!(wm.known_hwnds.get(&10), Some(&(0, 1)));
+            assert_eq!(wm.focused_desktop_idx, usize::from(follow));
+            assert_eq!(fake.switch_calls(), usize::from(follow));
+        }
     }
 
     #[test]
