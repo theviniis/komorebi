@@ -72,7 +72,16 @@ pub fn listen_for_notifications(
 /// Orphan messages carry the association observed by the polling thread.
 /// A desktop event can invalidate it before the queue is consumed.
 pub(crate) fn should_reap_orphan(wm: &WindowManager, hwnd: isize, pair: (usize, usize)) -> bool {
-    wm.known_hwnds.get(&hwnd) == Some(&pair) && !wm.is_window_on_other_desktop(hwnd)
+    should_reap_orphan_with_window_validity(wm, hwnd, pair, Window::from(hwnd).is_window())
+}
+
+pub(crate) fn should_reap_orphan_with_window_validity(
+    wm: &WindowManager,
+    hwnd: isize,
+    pair: (usize, usize),
+    is_window: bool,
+) -> bool {
+    wm.known_hwnds.get(&hwnd) == Some(&pair) && (!is_window || !wm.is_window_on_other_desktop(hwnd))
 }
 
 fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result<()> {
@@ -195,13 +204,16 @@ fn find_orphans(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result<()> {
         for (hwnd, (m_idx, w_idx)) in cache.iter() {
             let window = Window::from(*hwnd);
 
-            // Skip windows on other native desktops
-            if wm.lock().is_window_on_other_desktop(*hwnd) {
+            let is_window = window.is_window();
+
+            // Native desktop hiding protects live windows only. A destroyed HWND
+            // must still be removed from its stored background workspace.
+            if is_window && wm.lock().is_window_on_other_desktop(*hwnd) {
                 continue;
             }
 
             #[allow(deprecated)]
-            if !window.is_window()
+            if !is_window
                 || (
                     // This one is a hack because WINWORD.EXE is an absolute trainwreck of an app
                     // when multiple docs are open, it keeps open an invisible window, with WS_EX_LAYERED

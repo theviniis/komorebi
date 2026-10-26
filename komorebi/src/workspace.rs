@@ -1078,6 +1078,19 @@ impl Workspace {
     /// Detach bookkeeping only: native desktop movement already happened in Windows.
     /// Restoring, hiding or focusing here would interfere with Task View and stack moves.
     pub(crate) fn detach_window_for_desktop_move(&mut self, hwnd: isize) -> Option<(Window, bool)> {
+        fn detach(container: &mut Container, idx: usize) -> Option<Window> {
+            let selected_hwnd = container.focused_window().map(|window| window.hwnd);
+            let window = container.remove_window_by_idx(idx);
+            // Removing another member must preserve the visible selection. The
+            // general removal helper otherwise selects the removed index's predecessor.
+            if let Some(selected_idx) =
+                selected_hwnd.and_then(|hwnd| container.idx_for_window(hwnd))
+            {
+                container.focus_window(selected_idx);
+            }
+            window
+        }
+
         if let Some(idx) = self.floating_windows().iter().position(|w| w.hwnd == hwnd) {
             return self.floating_windows_mut().remove(idx).map(|w| (w, true));
         }
@@ -1088,7 +1101,7 @@ impl Workspace {
         if let Some(container) = &mut self.monocle_container
             && let Some(idx) = container.idx_for_window(hwnd)
         {
-            let window = container.remove_window_by_idx(idx);
+            let window = detach(container, idx);
             if container.windows().is_empty() {
                 self.monocle_container = None;
                 self.monocle_container_restore_idx = None;
@@ -1098,7 +1111,7 @@ impl Workspace {
         let container_idx = self.container_idx_for_window(hwnd)?;
         let container = self.containers_mut().get_mut(container_idx)?;
         let window_idx = container.idx_for_window(hwnd)?;
-        let window = container.remove_window_by_idx(window_idx)?;
+        let window = detach(container, window_idx)?;
         if container.windows().is_empty() {
             self.remove_container_by_idx(container_idx);
             self.focus_previous_container();

@@ -1785,6 +1785,19 @@ impl WindowManager {
         // Capture the target once. No foreground queries are allowed after the OS moves.
         let monocle = floating_idx.is_none() && source.monocle_container.is_some();
         let container_idx = source.focused_container_idx();
+        let selected_window = if let Some(float_idx) = floating_idx {
+            source.floating_windows()[float_idx]
+        } else {
+            let container = if monocle {
+                source.monocle_container.as_ref()
+            } else {
+                source.containers().get(container_idx)
+            }
+            .ok_or_eyre("there is no focused container")?;
+            *container
+                .focused_window()
+                .ok_or_eyre("there is no focused window")?
+        };
         let hwnds = if let Some(float_idx) = floating_idx {
             vec![source.floating_windows()[float_idx].hwnd]
         } else {
@@ -1827,18 +1840,28 @@ impl WindowManager {
             }
         }
 
-        if floating_idx.is_some() && monitor_idx != target_monitor_idx {
+        // Untiled workspaces do not position managed windows during layout updates.
+        // Translate every stack member so later stack selections stay on this monitor.
+        if monitor_idx != target_monitor_idx
+            && (floating_idx.is_some()
+                || !self.monitors()[target_monitor_idx].workspaces()[idx].tile)
+        {
             let origin = self.monitors()[monitor_idx].work_area_size;
             let target = self.monitors()[target_monitor_idx].work_area_size;
-            if let Err(error) =
-                self.window_api
-                    .move_window_to_area(Window::from(hwnds[0]), &origin, &target)
-            {
-                let reconciliation = self.reconcile_window_desktop(hwnds[0]);
-                self.update_known_hwnds();
-                bail!(
-                    "monitor movement failed: {error}; native reconciliation: {reconciliation:?}"
-                );
+            for &hwnd in &hwnds {
+                if let Err(error) =
+                    self.window_api
+                        .move_window_to_area(Window::from(hwnd), &origin, &target)
+                {
+                    let mut reconciliation = Vec::new();
+                    for &affected in &hwnds {
+                        reconciliation.push(self.reconcile_window_desktop(affected));
+                    }
+                    self.update_known_hwnds();
+                    bail!(
+                        "monitor movement failed: {error}; native reconciliation: {reconciliation:?}"
+                    );
+                }
             }
         }
         let monitor = &mut self.monitors_mut()[monitor_idx];
@@ -1892,10 +1915,8 @@ impl WindowManager {
             self.focus_monitor(target_monitor_idx)?;
             self.focus_desktop_by_id(target_id)?;
             if monitor_idx != target_monitor_idx {
-                self.window_api.focus_window(
-                    Window::from(*hwnds.last().ok_or_eyre("no moved windows")?),
-                    self.mouse_follows_focus,
-                )?;
+                self.window_api
+                    .focus_window(selected_window, self.mouse_follows_focus)?;
             }
         } else {
             self.sync_desktop_count()?;
@@ -1958,10 +1979,34 @@ impl WindowManager {
         }
         let mut detached = None;
         for &(m, d) in &locations {
+            // Removal changes which stack member should be visible, and removing
+            // the last monocle member exposes the ordinary containers and floats.
+            // Restore only newly exposed windows; restoring a native desktop's
+            // windows does not select that desktop or change foreground focus.
+            let visible_windows = |workspace: &Workspace| -> Vec<Window> {
+                if let Some(container) = &workspace.monocle_container {
+                    container.focused_window().copied().into_iter().collect()
+                } else if let Some(window) = workspace.maximized_window {
+                    vec![window]
+                } else {
+                    workspace
+                        .containers()
+                        .iter()
+                        .filter_map(|container| container.focused_window().copied())
+                        .chain(workspace.floating_windows().iter().copied())
+                        .collect()
+                }
+            };
+            let previously_visible = visible_windows(&self.monitors()[m].workspaces()[d]);
             if let Some(window) =
                 self.monitors_mut()[m].workspaces_mut()[d].detach_window_for_desktop_move(hwnd)
             {
                 detached.get_or_insert(window);
+                for window in visible_windows(&self.monitors()[m].workspaces()[d]) {
+                    if !previously_visible.iter().any(|old| old.hwnd == window.hwnd) {
+                        self.window_api.restore_window(window);
+                    }
+                }
             }
         }
         if let Some((window, floating)) = detached {
@@ -6589,6 +6634,126 @@ mod tests {
     }
 
     #[test]
+    fn external_desktop_move_preserves_surviving_stack_selection() {
+        for source_idx in [0, 1] {
+            for monocle in [false, true] {
+                for moved_hwnd in [10, 11] {
+                    let (mut wm, fake, _ctx) = setup_window_manager_with_fake_desktops(3);
+                    let api = Arc::new(crate::windows_api::FakeWindowApi::default());
+                    wm.window_api = api.clone();
+                    let source = &mut wm.monitors_mut()[0].workspaces_mut()[source_idx];
+                    source.new_container_for_window(Window::from(10));
+                    for hwnd in [11, 12] {
+                        source
+                            .focused_container_mut()
+                            .unwrap()
+                            .add_window_without_visibility_changes(Window::from(hwnd));
+                    }
+                    if monocle {
+                        source.monocle_container = source.remove_container_by_idx(0);
+                        source.monocle_container_restore_idx = Some(0);
+                    }
+                    fake.set_window_desktop(moved_hwnd, 2);
+                    wm.process_event(WindowManagerEvent::WindowDesktopChanged { hwnd: moved_hwnd })
+                        .unwrap();
+                    let source = &wm.monitors()[0].workspaces()[source_idx];
+                    let stack = if monocle {
+                        source.monocle_container.as_ref().unwrap()
+                    } else {
+                        &source.containers()[0]
+                    };
+                    assert_eq!(stack.focused_window().unwrap().hwnd, 12);
+                    assert_eq!(stack.windows().len(), 2);
+                    assert!(api.effects.lock().is_empty());
+                    assert_eq!(wm.focused_desktop_idx, 0);
+                    assert_eq!(fake.switch_calls(), 0);
+                    assert!(fake.moved().is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn external_desktop_move_restores_only_newly_selected_stack_member() {
+        for source_idx in [0, 1] {
+            for monocle in [false, true] {
+                for moved_hwnd in [10, 11] {
+                    let (mut wm, fake, _ctx) = setup_window_manager_with_fake_desktops(3);
+                    let api = Arc::new(crate::windows_api::FakeWindowApi::default());
+                    wm.window_api = api.clone();
+                    let source = &mut wm.monitors_mut()[0].workspaces_mut()[source_idx];
+                    source.new_container_for_window(Window::from(10));
+                    source
+                        .focused_container_mut()
+                        .unwrap()
+                        .add_window_without_visibility_changes(Window::from(11));
+                    if monocle {
+                        source.monocle_container = source.remove_container_by_idx(0);
+                        source.monocle_container_restore_idx = Some(0);
+                        source.new_container_for_window(Window::from(30));
+                        source.floating_windows_mut().push_back(Window::from(40));
+                    }
+                    fake.set_window_desktop(moved_hwnd, 2);
+                    for _ in 0..2 {
+                        wm.process_event(WindowManagerEvent::WindowDesktopChanged {
+                            hwnd: moved_hwnd,
+                        })
+                        .unwrap();
+                    }
+                    let expected = if moved_hwnd == 11 {
+                        vec![("restore", 10)]
+                    } else {
+                        vec![]
+                    };
+                    assert_eq!(*api.effects.lock(), expected);
+                    assert_eq!(wm.focused_desktop_idx, 0);
+                    assert_eq!(fake.switch_calls(), 0);
+                    assert!(fake.moved().is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn external_desktop_move_of_last_monocle_restores_stack_selection_and_floats() {
+        for source_idx in [0, 1] {
+            let (mut wm, fake, _ctx) = setup_window_manager_with_fake_desktops(3);
+            let api = Arc::new(crate::windows_api::FakeWindowApi::default());
+            wm.window_api = api.clone();
+            let source = &mut wm.monitors_mut()[0].workspaces_mut()[source_idx];
+            source.new_container_for_window(Window::from(20));
+            source
+                .focused_container_mut()
+                .unwrap()
+                .add_window_without_visibility_changes(Window::from(21));
+            source.new_container_for_window(Window::from(30));
+            source.floating_windows_mut().push_back(Window::from(40));
+            let mut monocle = crate::container::Container::default();
+            monocle.add_window_without_visibility_changes(Window::from(10));
+            source.monocle_container = Some(monocle);
+            source.monocle_container_restore_idx = Some(0);
+            fake.set_window_desktop(10, 2);
+            for _ in 0..2 {
+                wm.process_event(WindowManagerEvent::WindowDesktopChanged { hwnd: 10 })
+                    .unwrap();
+            }
+            assert_eq!(
+                *api.effects.lock(),
+                vec![("restore", 21), ("restore", 30), ("restore", 40)]
+            );
+            assert!(
+                wm.monitors()[0].workspaces()[source_idx]
+                    .monocle_container
+                    .is_none()
+            );
+            assert_eq!(wm.known_hwnds.get(&10), Some(&(0, 2)));
+            assert_eq!(wm.focused_desktop_idx, 0);
+            assert_eq!(fake.switch_calls(), 0);
+            assert!(fake.moved().is_empty());
+        }
+    }
+
+    #[test]
     fn external_desktop_move_is_idempotent_and_preserves_monitor_and_focus() {
         let (mut wm, fake, _ctx) = setup_window_manager_with_fake_desktops(3);
         let mut second = wm.monitors()[0].clone();
@@ -7258,7 +7423,12 @@ mod tests {
             wm.monitors_mut()[0].workspaces_mut()[0].new_container_for_window(Window::from(42));
             fake.set_window_desktop(42, 0);
             wm.update_known_hwnds();
-            assert!(crate::reaper::should_reap_orphan(&wm, 42, (0, 0)));
+            assert!(crate::reaper::should_reap_orphan_with_window_validity(
+                &wm,
+                42,
+                (0, 0),
+                true
+            ));
             fake.move_desktop(0, 2);
             wm.process_event(WindowManagerEvent::DesktopMoved {
                 desktop: 2,
@@ -7266,12 +7436,22 @@ mod tests {
                 new: 2,
             })
             .unwrap();
-            assert!(!crate::reaper::should_reap_orphan(&wm, 42, (0, 0)));
+            assert!(!crate::reaper::should_reap_orphan_with_window_validity(
+                &wm,
+                42,
+                (0, 0),
+                true
+            ));
             fake.set_current_desktop(0);
             wm.process_event(WindowManagerEvent::DesktopChanged { new: 0, old: 2 })
                 .unwrap();
             assert!(wm.is_window_on_other_desktop(42));
-            assert!(!crate::reaper::should_reap_orphan(&wm, 42, (0, 2)));
+            assert!(!crate::reaper::should_reap_orphan_with_window_validity(
+                &wm,
+                42,
+                (0, 2),
+                true
+            ));
         }
 
         #[test]
@@ -7371,6 +7551,36 @@ mod tests {
         }
 
         #[test]
+        fn desktop_identity_reaper_cleans_dead_background_windows() {
+            let (mut wm, fake, _ctx) = setup_window_manager_with_fake_desktops(2);
+            wm.monitors_mut()[0].workspaces_mut()[0].new_container_for_window(Window::from(42));
+            fake.set_window_desktop(42, 0);
+            wm.update_known_hwnds();
+            fake.set_current_desktop(1);
+            assert!(wm.is_window_on_other_desktop(42));
+
+            // Inject HWND validity: synthetic handles must never query live windows.
+            assert!(!crate::reaper::should_reap_orphan_with_window_validity(
+                &wm,
+                42,
+                (0, 0),
+                true
+            ));
+            assert!(crate::reaper::should_reap_orphan_with_window_validity(
+                &wm,
+                42,
+                (0, 0),
+                false
+            ));
+            assert!(!crate::reaper::should_reap_orphan_with_window_validity(
+                &wm,
+                42,
+                (0, 1),
+                false
+            ));
+        }
+
+        #[test]
         fn desktop_identity_reaper_preserves_windows_before_the_queued_native_event() {
             let (mut wm, fake, _ctx) = setup_window_manager_with_fake_desktops(2);
             wm.monitors_mut()[0].workspaces_mut()[0].new_container_for_window(Window::from(42));
@@ -7378,11 +7588,21 @@ mod tests {
             wm.update_known_hwnds();
             fake.set_current_desktop(1);
             assert!(wm.is_window_on_other_desktop(42));
-            assert!(!crate::reaper::should_reap_orphan(&wm, 42, (0, 0)));
+            assert!(!crate::reaper::should_reap_orphan_with_window_validity(
+                &wm,
+                42,
+                (0, 0),
+                true
+            ));
             fake.set_current_desktop(0);
             fake.set_window_desktop(42, 1);
             assert!(wm.is_window_on_other_desktop(42));
-            assert!(!crate::reaper::should_reap_orphan(&wm, 42, (0, 0)));
+            assert!(!crate::reaper::should_reap_orphan_with_window_validity(
+                &wm,
+                42,
+                (0, 0),
+                true
+            ));
         }
 
         #[test]
@@ -7578,6 +7798,60 @@ mod tests {
             assert!(window_api.effects.lock().contains(&("focus", 42)));
             for monitor in wm.monitors() {
                 assert_eq!(monitor.focused_workspace_idx(), 1);
+            }
+        }
+
+        #[test]
+        fn native_compat_monitor_move_translates_untiled_stack_and_preserves_selection() {
+            for destination in [0, 1] {
+                for follow in [false, true] {
+                    let (mut wm, fake, _ctx) = setup_window_manager_with_fake_desktops(2);
+                    second_monitor(&mut wm);
+                    let api = Arc::new(api(42, 0));
+                    wm.window_api = api.clone();
+                    wm.monitors_mut()[1].workspaces_mut()[destination].tile = false;
+                    let source = wm.focused_workspace_mut().unwrap();
+                    source.new_container_for_window(Window::from(42));
+                    let stack = source.focused_container_mut().unwrap();
+                    stack.add_window_without_visibility_changes(Window::from(43));
+                    stack.focus_window(0);
+                    for hwnd in [42, 43] {
+                        fake.set_window_desktop(hwnd, 0);
+                    }
+
+                    wm.move_container_to_monitor(1, Some(destination), follow, None)
+                        .unwrap();
+
+                    let target = &wm.monitors()[1].workspaces()[destination];
+                    assert_eq!(
+                        target
+                            .focused_container()
+                            .unwrap()
+                            .focused_window()
+                            .unwrap()
+                            .hwnd,
+                        42
+                    );
+                    for hwnd in [42, 43] {
+                        assert_caches(&wm, hwnd, (1, destination));
+                    }
+                    let effects = api.effects.lock();
+                    let translated = effects
+                        .iter()
+                        .filter(|(effect, _)| *effect == "move_area")
+                        .copied()
+                        .collect::<Vec<_>>();
+                    assert_eq!(translated, vec![("move_area", 42), ("move_area", 43)]);
+                    assert!(!effects.contains(&("focus", 43)));
+                    if follow {
+                        assert_eq!(
+                            effects.iter().rev().find(|(effect, _)| *effect == "focus"),
+                            Some(&("focus", 42))
+                        );
+                    } else {
+                        assert!(!effects.iter().any(|(effect, _)| *effect == "focus"));
+                    }
+                }
             }
         }
 

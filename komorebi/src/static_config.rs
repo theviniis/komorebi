@@ -1441,6 +1441,38 @@ impl StaticConfig {
         Ok(())
     }
 
+    // Both postload and reload must ignore all settings, including application rules,
+    // for configured workspace indices that have no corresponding native desktop.
+    fn append_workspace_matching_rules(
+        workspace_matching_rules: &mut Vec<WorkspaceMatchingRule>,
+        monitor_config: &MonitorConfig,
+        monitor_index: usize,
+        workspace_count: usize,
+    ) {
+        for (workspace_index, ws) in monitor_config
+            .workspaces
+            .iter()
+            .take(workspace_count)
+            .enumerate()
+        {
+            for (rules, initial_only) in [
+                (&ws.workspace_rules, false),
+                (&ws.initial_workspace_rules, true),
+            ] {
+                if let Some(rules) = rules {
+                    for rule in rules {
+                        workspace_matching_rules.push(WorkspaceMatchingRule {
+                            monitor_index,
+                            workspace_index,
+                            matching_rule: rule.clone(),
+                            initial_only,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     pub fn postload(path: &PathBuf, wm: &Arc<Mutex<WindowManager>>) -> eyre::Result<()> {
         let mut value = Self::read(path)?;
         let mut wm = wm.lock();
@@ -1533,29 +1565,12 @@ impl StaticConfig {
                 }
 
                 let mut workspace_matching_rules = WORKSPACE_MATCHING_RULES.lock();
-                for (j, ws) in monitor_config.workspaces.iter().enumerate() {
-                    if let Some(rules) = &ws.workspace_rules {
-                        for r in rules {
-                            workspace_matching_rules.push(WorkspaceMatchingRule {
-                                monitor_index: i,
-                                workspace_index: j,
-                                matching_rule: r.clone(),
-                                initial_only: false,
-                            });
-                        }
-                    }
-
-                    if let Some(rules) = &ws.initial_workspace_rules {
-                        for r in rules {
-                            workspace_matching_rules.push(WorkspaceMatchingRule {
-                                monitor_index: i,
-                                workspace_index: j,
-                                matching_rule: r.clone(),
-                                initial_only: true,
-                            });
-                        }
-                    }
-                }
+                Self::append_workspace_matching_rules(
+                    &mut workspace_matching_rules,
+                    monitor_config,
+                    i,
+                    monitor.workspaces().len(),
+                );
             }
         }
 
@@ -1712,29 +1727,12 @@ impl StaticConfig {
                 }
 
                 let mut workspace_matching_rules = WORKSPACE_MATCHING_RULES.lock();
-                for (j, ws) in monitor_config.workspaces.iter().enumerate() {
-                    if let Some(rules) = &ws.workspace_rules {
-                        for r in rules {
-                            workspace_matching_rules.push(WorkspaceMatchingRule {
-                                monitor_index: i,
-                                workspace_index: j,
-                                matching_rule: r.clone(),
-                                initial_only: false,
-                            });
-                        }
-                    }
-
-                    if let Some(rules) = &ws.initial_workspace_rules {
-                        for r in rules {
-                            workspace_matching_rules.push(WorkspaceMatchingRule {
-                                monitor_index: i,
-                                workspace_index: j,
-                                matching_rule: r.clone(),
-                                initial_only: true,
-                            });
-                        }
-                    }
-                }
+                Self::append_workspace_matching_rules(
+                    &mut workspace_matching_rules,
+                    monitor_config,
+                    i,
+                    monitor.workspaces().len(),
+                );
             }
         }
 
@@ -2049,6 +2047,81 @@ mod tests {
 
     use crate::StaticConfig;
     use crate::WorkspaceConfig;
+
+    #[test]
+    fn workspace_rule_registration_ignores_excess_native_workspace_configs() {
+        let config: super::MonitorConfig = serde_json::from_value(serde_json::json!({
+            "workspaces": (0..3).map(|index| serde_json::json!({
+                "name": format!("Workspace {index}"),
+                "workspace_rules": [{"kind": "Exe", "id": format!("persistent-{index}.exe")}],
+                "initial_workspace_rules": [{"kind": "Exe", "id": format!("initial-{index}.exe")}]
+            })).collect::<Vec<_>>()
+        }))
+        .unwrap();
+        let mut monitor = crate::monitor::new(
+            0,
+            crate::core::Rect::default(),
+            crate::core::Rect::default(),
+            "FakeMonitor".into(),
+            "FakeDevice".into(),
+            "FakeDeviceID".into(),
+            None,
+        );
+        let ids = [
+            crate::virtual_desktop::DesktopId(1),
+            crate::virtual_desktop::DesktopId(2),
+        ];
+        StaticConfig::align_configured_monitor(&mut monitor, &ids, config.workspaces.len())
+            .unwrap();
+
+        // Exercise the shared registration used by postload and reload, without a
+        // live desktop backend or global configuration changes.
+        let mut rules = Vec::new();
+        StaticConfig::append_workspace_matching_rules(
+            &mut rules,
+            &config,
+            1,
+            monitor.workspaces().len(),
+        );
+        assert_eq!(rules.len(), 4);
+        for (workspace_index, pair) in rules.chunks_exact(2).enumerate() {
+            assert_eq!(pair[0].monitor_index, 1);
+            assert_eq!(pair[1].monitor_index, 1);
+            assert_eq!(pair[0].workspace_index, workspace_index);
+            assert_eq!(pair[1].workspace_index, workspace_index);
+            assert!(!pair[0].initial_only);
+            assert!(pair[1].initial_only);
+            assert_eq!(
+                pair[0].matching_rule,
+                config.workspaces[workspace_index]
+                    .workspace_rules
+                    .as_ref()
+                    .unwrap()[0]
+            );
+            assert_eq!(
+                pair[1].matching_rule,
+                config.workspaces[workspace_index]
+                    .initial_workspace_rules
+                    .as_ref()
+                    .unwrap()[0]
+            );
+        }
+
+        // A reload clears the old list before rebuilding it. Simulate an old
+        // three-desktop configuration so both kinds of stale rules are covered.
+        rules.clear();
+        StaticConfig::append_workspace_matching_rules(&mut rules, &config, 1, 3);
+        assert_eq!(rules.len(), 6);
+        rules.clear();
+        StaticConfig::append_workspace_matching_rules(
+            &mut rules,
+            &config,
+            1,
+            monitor.workspaces().len(),
+        );
+        assert_eq!(rules.len(), 4);
+        assert!(rules.iter().all(|rule| rule.workspace_index < ids.len()));
+    }
 
     #[test]
     #[ignore = "this fails on github actions due to rate limiting changes introduced in may 2025"]
