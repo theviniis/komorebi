@@ -7786,7 +7786,7 @@
           }
         },
         "name": {
-          "description": "Global native desktop name. When monitors disagree, the first configured monitor wins.",
+          "description": "Legacy workspace name retained for compatibility. Displayed names come from Windows; this field does not rename desktops.",
           "type": "string"
         },
         "tile": {

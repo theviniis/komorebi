@@ -3870,34 +3870,6 @@ impl WindowManager {
         self.sync_desktop_count()
     }
 
-    pub(crate) fn apply_configured_workspace_names(&mut self) -> eyre::Result<()> {
-        let mut names: std::collections::BTreeMap<usize, String> =
-            std::collections::BTreeMap::new();
-        for monitor in self.monitors() {
-            for (i, workspace) in monitor.workspaces().iter().enumerate() {
-                if let Some(name) = workspace.workspace_config.as_ref().map(|cfg| &cfg.name) {
-                    if let Some(previous) = names.get(&i) {
-                        if previous != name {
-                            tracing::warn!(
-                                "conflicting desktop names at index {i}; using first monitor configuration"
-                            );
-                        }
-                    } else {
-                        names.insert(i, name.clone());
-                    }
-                }
-            }
-        }
-        for (i, name) in names {
-            let id = *self
-                .desktop_ids
-                .get(i)
-                .ok_or_eyre("configured desktop does not exist")?;
-            virtual_desktop::backend().set_desktop_name_id(id, &name)?;
-        }
-        self.sync_desktop_count()
-    }
-
     #[tracing::instrument(skip(self))]
     pub fn set_container_padding(
         &mut self,
@@ -7998,21 +7970,43 @@ mod tests {
         }
 
         #[test]
-        fn native_compat_config_is_limited_by_native_count_and_names_are_global() {
+        fn native_compat_config_load_and_reload_preserve_windows_names() {
+            use crate::virtual_desktop::DesktopBackend;
             let (mut wm, fake, _ctx) = setup_window_manager_with_fake_desktops(2);
             second_monitor(&mut wm);
-            let ids = wm.desktop_ids.clone();
-            crate::StaticConfig::align_configured_monitor(&mut wm.monitors_mut()[0], &ids, 20)
-                .unwrap();
-            wm.monitors_mut()[0].workspaces_mut()[0].workspace_config =
-                Some(serde_json::from_value(serde_json::json!({"name":"Code"})).unwrap());
-            wm.monitors_mut()[1].workspaces_mut()[0].workspace_config =
-                Some(serde_json::from_value(serde_json::json!({"name":"Conflicting"})).unwrap());
-            wm.apply_configured_workspace_names().unwrap();
-            assert_eq!(wm.desktop_count, 2);
-            for monitor in wm.monitors() {
-                assert_eq!(monitor.workspaces().len(), 2);
-                assert_eq!(monitor.workspaces()[0].name.as_deref(), Some("Code"));
+            // Exercise the configuration stages shared by postload and reload,
+            // without invoking reload's real Windows focus-setting APIs.
+            for native_name in ["From Task View", "Renamed in Task View"] {
+                fake.set_desktop_name(0, native_name).unwrap();
+                let snapshot = fake.snapshot().unwrap();
+                wm.sync_desktop_count().unwrap();
+                let ids = wm.desktop_ids.clone();
+                for (i, monitor) in wm.monitors_mut().iter_mut().enumerate() {
+                    crate::StaticConfig::align_configured_monitor(monitor, &ids, 20).unwrap();
+                    let config = serde_json::from_value(serde_json::json!({
+                        "name": format!("Legacy name {i}"),
+                        "workspace_padding": 17
+                    }))
+                    .unwrap();
+                    monitor.workspaces_mut()[0]
+                        .load_static_config(&config, None)
+                        .unwrap();
+                    // Loading settings itself must not temporarily expose a stale name.
+                    assert_eq!(monitor.workspaces()[0].name.as_deref(), Some(native_name));
+                    assert_eq!(monitor.workspaces()[0].workspace_padding, Some(17));
+                }
+                wm.sync_desktop_count().unwrap();
+                assert_eq!(fake.snapshot().unwrap(), snapshot);
+                assert_eq!(wm.desktop_count, 2);
+                assert_eq!(
+                    wm.workspace_names.get(&0).map(String::as_str),
+                    Some(native_name)
+                );
+                let state = crate::State::from(&wm);
+                for monitor in state.monitors.elements() {
+                    assert_eq!(monitor.workspaces().len(), 2);
+                    assert_eq!(monitor.workspaces()[0].name.as_deref(), Some(native_name));
+                }
             }
             assert_eq!(fake.switch_calls(), 0);
             assert!(fake.moved().is_empty());

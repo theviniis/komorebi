@@ -33,7 +33,7 @@ The SocketMessage JSON tags and argument shapes remain compatible. Current socke
 
 A monitor's `workspaces` entries configure existing native desktop positions. Extra entries are ignored with a warning rather than creating desktops. New desktops use defaults until their configuration is loaded/reloaded. Monitor cache templates are also limited to the native count.
 
-Configured desktop names are applied globally on configuration load/reload. If monitor configurations disagree about one desktop's name, the first active configured monitor wins and a warning explains the conflict. Subsequent Task View renames are reflected in the state and bar; monitor reconnection does not replay stale configured names over Task View.
+Windows desktop names are authoritative and are reflected in the state and bar. Legacy workspace `name` fields remain accepted for configuration compatibility, but loading/reloading configuration and reconnecting monitors never rename native desktops. Rename desktops in Task View or deliberately invoke `workspace-name`.
 
 Workspace rules still redirect applications explicitly, using native desktop movement. Invalid desktop or monitor destinations fail before membership changes. Initial-only rules are recorded after success and do not undo later user moves. Permanent rules continue enforcing their explicit target.
 

@@ -233,7 +233,8 @@ impl Workspace {
         config: &WorkspaceConfig,
         layout_defaults: Option<&HashMap<DefaultLayout, LayoutDefaultEntry>>,
     ) -> eyre::Result<()> {
-        self.name = Option::from(config.name.clone());
+        // Windows owns desktop names. Legacy configuration names must not replace
+        // the name mirrored from the native desktop snapshot.
 
         self.container_padding = config.container_padding;
 

@@ -211,7 +211,7 @@ pub struct Wallpaper {
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 /// Workspace configuration
 pub struct WorkspaceConfig {
-    /// Global native desktop name. When monitors disagree, the first configured monitor wins.
+    /// Legacy workspace name retained for compatibility. Displayed names come from Windows; this field does not rename desktops.
     pub name: String,
     /// Layout
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1632,7 +1632,7 @@ impl StaticConfig {
             }
         }
 
-        wm.apply_configured_workspace_names()?;
+        wm.sync_desktop_count()?;
         wm.enforce_workspace_rules()?;
 
         if value.border == Some(true) {
@@ -1838,7 +1838,7 @@ impl StaticConfig {
             Some(FocusFollowsMouseImplementation::Komorebi) => {}
         };
 
-        wm.apply_configured_workspace_names()?;
+        wm.sync_desktop_count()?;
         let monitor_count = wm.monitors().len();
 
         for i in 0..monitor_count {
