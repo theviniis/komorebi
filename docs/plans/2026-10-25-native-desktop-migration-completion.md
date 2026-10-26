@@ -451,3 +451,10 @@ Evidências: [stage4-validation.log](evidence/stage4-validation.log) e [stage4-r
 - PR em rascunho enquanto os critérios manuais restantes, validação visual da correção do tema e erro 10022 continuam abertos. Criação do PR não significa aceite completo nem merge autorizado.
 
 - Preparação do commit: logs de evidência normalizados para UTF-8/LF e espaços finais removidos, sem alterar resultados; conteúdo do patch histórico preservado.
+
+
+#### Publicação concluída
+
+- Commit de implementação: `fa89d2d7` — feat: complete native desktop workspace integration and regression coverage; publicado em fork/feat/native-desktop-workspaces.
+- PR em rascunho aberto: https://github.com/theviniis/komorebi/pull/1, de feat/native-desktop-workspaces para main no fork theviniis/komorebi. Branch base e estado OPEN/DRAFT conferidos pela API do GitHub. PR anexado ao chat.
+- Código/documentação/evidências publicados; arquivos avulsos list.txt e test_output*.txt preservados localmente sem inclusão no commit. Nenhum merge ou instalação foi executado. A lista de aceite restante está explícita na descrição do PR.
