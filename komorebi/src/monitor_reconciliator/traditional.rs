@@ -136,6 +136,15 @@ where
                 // Get the currently attached display devices
                 let attached_devices = attached_display_devices(display_provider)?;
 
+                let geometry_changed = wm.monitors().iter().any(|monitor| {
+                    attached_devices.iter().any(|attached| {
+                        same_device(monitor, attached)
+                            && (monitor.size != attached.size
+                                || monitor.work_area_size != attached.work_area_size
+                                || monitor.id != attached.id)
+                    })
+                });
+
                 // Make sure that in our state any attached displays have the latest Win32 data
                 for monitor in wm.monitors_mut() {
                     for attached in &attached_devices {
@@ -159,12 +168,6 @@ where
                     }
                 }
 
-                if initial_monitor_count == attached_devices.len() {
-                    tracing::debug!("monitor counts match, reconciliation not required");
-                    drop(wm);
-                    continue 'receiver;
-                }
-
                 if attached_devices.is_empty() {
                     tracing::debug!(
                         "no devices found, skipping reconciliation to avoid breaking state"
@@ -174,7 +177,7 @@ where
                 }
 
                 // Handle potential monitor removal with verification
-                let attached_devices = if initial_monitor_count > attached_devices.len() {
+                let attached_devices = if has_detached_monitors(wm.monitors(), &attached_devices) {
                     tracing::info!(
                         "potential monitor removal detected ({initial_monitor_count} vs {}), verifying in 3s",
                         attached_devices.len()
@@ -203,9 +206,17 @@ where
                         re_queried_devices.len()
                     );
 
+                    if re_queried_devices.is_empty() {
+                        tracing::debug!("no devices after verification, preserving monitor state");
+                        continue 'receiver;
+                    }
+
                     // If monitors are back, the removal was transient (spurious event)
                     // Still try to restore state since windows might have been minimized
-                    if re_queried_devices.len() >= initial_monitor_count {
+                    if {
+                        let current = wm_arc.lock();
+                        !has_detached_monitors(current.monitors(), &re_queried_devices)
+                    } {
                         tracing::info!(
                             "monitor removal was transient (spurious event), attempting state restoration. Initial: {}, Re-queried: {}",
                             initial_monitor_count,
@@ -344,7 +355,7 @@ where
                     attached_devices
                 };
 
-                if initial_monitor_count > attached_devices.len() {
+                if has_detached_monitors(wm.monitors(), &attached_devices) {
                     tracing::info!("removing disconnected monitors");
 
                     // Windows to remove from `known_hwnds`
@@ -355,10 +366,10 @@ where
                     let mut newly_removed_displays = vec![];
 
                     for (m_idx, m) in wm.monitors().iter().enumerate() {
-                        if !attached_devices.iter().any(|attached| {
-                            attached.serial_number_id.eq(&m.serial_number_id)
-                                || attached.device_id.eq(&m.device_id)
-                        }) {
+                        if !attached_devices
+                            .iter()
+                            .any(|attached| same_device(m, attached))
+                        {
                             let id = m
                                 .serial_number_id
                                 .as_ref()
@@ -464,7 +475,8 @@ where
                     let post_removal_monitor_count = wm.monitors().len();
                     let focused_monitor_idx = wm.focused_monitor_idx();
                     if focused_monitor_idx >= post_removal_monitor_count {
-                        wm.focus_monitor(0)?;
+                        // A replacement can temporarily leave no monitors until discovery below.
+                        wm.monitors.focus(0);
                     }
 
                     let offset = wm.work_area_offset;
@@ -564,8 +576,6 @@ where
                                     // windows that were visible since they were probably minimized by
                                     // Windows.
                                     let is_focused_workspace = j == focused_workspace_idx;
-                                    let focused_container_idx = workspace.focused_container_idx();
-
                                     let mut empty_containers = Vec::new();
                                     for (idx, container) in
                                         workspace.containers_mut().iter_mut().enumerate()
@@ -604,13 +614,7 @@ where
                                     }
 
                                     // Remove empty containers
-                                    for empty_idx in empty_containers {
-                                        if empty_idx == focused_container_idx {
-                                            workspace.remove_container(empty_idx);
-                                        } else {
-                                            workspace.remove_container_by_idx(empty_idx);
-                                        }
-                                    }
+                                    remove_empty_containers(workspace, empty_containers);
 
                                     if let Some(window) = &workspace.maximized_window {
                                         if window.exe().is_err()
@@ -720,7 +724,10 @@ where
 
                 let final_count = wm.monitors().len();
 
-                if post_removal_monitor_count != final_count {
+                if geometry_changed
+                    || initial_monitor_count != post_removal_monitor_count
+                    || post_removal_monitor_count != final_count
+                {
                     wm.retile_all(true)?;
                     // Second retile to fix DPI/resolution related jank
                     wm.retile_all(true)?;
@@ -741,4 +748,87 @@ where
     }
 
     Ok(())
+}
+
+// Compare identity as well as count: a dock can replace a display in one snapshot.
+fn has_detached_monitors(
+    current: &std::collections::VecDeque<Monitor>,
+    attached: &[Monitor],
+) -> bool {
+    current
+        .iter()
+        .any(|monitor| !attached.iter().any(|other| same_device(monitor, other)))
+}
+
+fn remove_empty_containers(workspace: &mut crate::workspace::Workspace, empty: Vec<usize>) {
+    let selected = workspace
+        .focused_container()
+        .map(|container| container.id.clone());
+    for idx in empty.into_iter().rev() {
+        workspace.remove_container_by_idx(idx);
+    }
+    let focus = selected
+        .and_then(|id| {
+            workspace
+                .containers()
+                .iter()
+                .position(|container| container.id == id)
+        })
+        .unwrap_or_else(|| {
+            workspace
+                .focused_container_idx()
+                .min(workspace.containers().len().saturating_sub(1))
+        });
+    workspace.focus_container(focus);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{container::Container, window::Window, workspace::Workspace};
+
+    fn display(id: &str) -> Monitor {
+        let mut monitor = Monitor::placeholder();
+        monitor.device_id = id.into();
+        monitor.serial_number_id = None;
+        monitor
+    }
+
+    #[test]
+    fn replacement_with_same_count_and_no_serial_is_a_detachment() {
+        let current = std::collections::VecDeque::from([display("a"), display("b")]);
+        assert!(has_detached_monitors(
+            &current,
+            &[display("a"), display("c")]
+        ));
+        assert!(!has_detached_monitors(
+            &current,
+            &[display("b"), display("a")]
+        ));
+    }
+
+    #[test]
+    fn cached_empty_containers_do_not_remove_surviving_windows() {
+        let mut workspace = Workspace::default();
+        workspace.add_container_to_back(Container::default());
+        workspace.add_container_to_back(Container::default());
+        let mut survivor = Container::default();
+        survivor.windows_mut().push_back(Window::from(42));
+        let selected = survivor.id.clone();
+        workspace.add_container_to_back(survivor);
+        workspace.resize_dimensions = vec![None, None, None];
+        remove_empty_containers(&mut workspace, vec![0, 1]);
+        assert_eq!(workspace.containers().len(), 1);
+        assert_eq!(workspace.focused_container().unwrap().id, selected);
+        assert_eq!(
+            workspace
+                .focused_container()
+                .unwrap()
+                .focused_window()
+                .unwrap()
+                .hwnd,
+            42
+        );
+        assert_eq!(workspace.resize_dimensions.len(), 1);
+    }
 }

@@ -186,6 +186,57 @@ pub fn listen_for_commands_tcp(wm: Arc<Mutex<WindowManager>>, port: usize) {
 }
 
 impl WindowManager {
+    fn select_eager_tiled_container(&mut self, container_idx: usize) -> eyre::Result<()> {
+        let workspace = self.focused_workspace_mut()?;
+        workspace.focus_container(container_idx);
+        workspace.layer = WorkspaceLayer::Tiling;
+        Ok(())
+    }
+
+    fn focus_eager_floating_window(&mut self, window_idx: usize) -> eyre::Result<()> {
+        let workspace = self.focused_workspace_mut()?;
+        if let Some(&window) = workspace.floating_windows().get(window_idx) {
+            workspace.floating_windows.focus(window_idx);
+            workspace.layer = WorkspaceLayer::Floating;
+            self.window_api
+                .focus_window(window, self.mouse_follows_focus)?;
+        }
+        Ok(())
+    }
+
+    fn should_ignore_command_on_virtual_desktop(
+        &self,
+        message: &SocketMessage,
+        current_desktop: Option<&[u8]>,
+    ) -> bool {
+        // Desktop isolation applies to window operations. Diagnostics, subscriptions,
+        // and shutdown must remain available from any desktop.
+        let desktop_independent = matches!(
+            message,
+            SocketMessage::Stop
+                | SocketMessage::StopIgnoreRestore
+                | SocketMessage::State
+                | SocketMessage::GlobalState
+                | SocketMessage::Query(_)
+                | SocketMessage::DebugWindow(_)
+                | SocketMessage::VisibleWindows
+                | SocketMessage::MonitorInformation
+                | SocketMessage::GenerateStaticConfig
+                | SocketMessage::AddSubscriberSocket(_)
+                | SocketMessage::AddSubscriberSocketWithOptions(_, _)
+                | SocketMessage::RemoveSubscriberSocket(_)
+                | SocketMessage::AddSubscriberPipe(_)
+                | SocketMessage::RemoveSubscriberPipe(_)
+        );
+        !self.native_desktop_workspaces
+            && !desktop_independent
+            && self
+                .virtual_desktop_id
+                .as_deref()
+                .zip(current_desktop)
+                .is_some_and(|(associated, current)| associated != current)
+    }
+
     // TODO(raggi): wrap reply in a newtype that can decorate a human friendly
     // name for the peer, such as getting the pid of the komorebic process for
     // the UDS or the IP:port for TCP.
@@ -195,17 +246,17 @@ impl WindowManager {
         message: SocketMessage,
         mut reply: impl std::io::Write,
     ) -> eyre::Result<()> {
-        if !self.native_desktop_workspaces {
-            if let Some(virtual_desktop_id) = &self.virtual_desktop_id
-                && let Some(id) = current_virtual_desktop()
-                && id != *virtual_desktop_id
-            {
-                tracing::info!(
-                    "ignoring events and commands while not on virtual desktop {:?}",
-                    virtual_desktop_id
-                );
-                return Ok(());
-            }
+        let desktop = if self.native_desktop_workspaces {
+            None
+        } else {
+            current_virtual_desktop()
+        };
+        if self.should_ignore_command_on_virtual_desktop(&message, desktop.as_deref()) {
+            tracing::info!(
+                "ignoring window command while not on virtual desktop {:?}",
+                self.virtual_desktop_id
+            );
+            return Ok(());
         }
         let initial_state = State::from(self.as_ref());
         let result = self.process_command_inner(message.clone(), &mut reply);
@@ -318,21 +369,11 @@ impl WindowManager {
                                 }
                             }
                             WorkspaceWindowLocation::Container(container_idx, window_idx) => {
-                                let focused_container_idx = self.focused_container_idx()?;
-                                if container_idx != focused_container_idx {
-                                    self.focused_workspace_mut()?.focus_container(container_idx);
-                                }
-
+                                self.select_eager_tiled_container(container_idx)?;
                                 self.focus_container_window(window_idx)?;
                             }
                             WorkspaceWindowLocation::Floating(window_idx) => {
-                                if let Some(window) = self
-                                    .focused_workspace_mut()?
-                                    .floating_windows_mut()
-                                    .get_mut(window_idx)
-                                {
-                                    window.focus(self.mouse_follows_focus)?;
-                                }
+                                self.focus_eager_floating_window(window_idx)?;
                             }
                         }
 
@@ -1276,10 +1317,10 @@ impl WindowManager {
                     }
 
                     let mut can_close = false;
+                    let mouse_follows_focus = self.mouse_follows_focus;
 
                     if let Some(monitor) = self.focused_monitor_mut() {
                         let focused_workspace_idx = monitor.focused_workspace_idx();
-                        let next_focused_workspace_idx = focused_workspace_idx.saturating_sub(1);
 
                         if let Some(workspace) = monitor.focused_workspace()
                             && monitor.workspaces().len() > 1
@@ -1294,12 +1335,16 @@ impl WindowManager {
 
                         if can_close
                             && monitor
-                                .workspaces_mut()
-                                .remove(focused_workspace_idx)
+                                .remove_workspace_by_idx(focused_workspace_idx)
                                 .is_some()
                         {
-                            self.focus_workspace(next_focused_workspace_idx)?;
+                            // Removal already selects the replacement and remaps history.
+                            // Focusing it again would overwrite that history.
+                            monitor.load_focused_workspace(mouse_follows_focus)?;
                         }
+                    }
+                    if can_close {
+                        self.update_focused_workspace(false, true)?;
                     }
                 } else {
                     tracing::warn!("close-workspace is a no-op: remove desktops in Task View");
@@ -2647,5 +2692,153 @@ mod tests {
         assert_eq!(wm.focused_workspace_idx().unwrap(), 5);
 
         std::fs::remove_file(socket_path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod traditional_desktop_command_tests {
+    use super::*;
+    use crate::container::Container;
+    use crate::windows_api::FakeWindowApi;
+    use crate::workspace::Workspace;
+
+    #[test]
+    fn desktop_isolation_preserves_control_commands_and_blocks_window_commands() {
+        let socket =
+            std::env::temp_dir().join(format!("command-desktop-{}.sock", uuid::Uuid::new_v4()));
+        let api = Arc::new(FakeWindowApi::default());
+        let (_tx, rx) = crossbeam_channel::unbounded();
+        let mut wm =
+            WindowManager::new_with_window_api(rx, Some(socket.clone()), api.clone()).unwrap();
+        wm.virtual_desktop_id = Some(vec![1]);
+        for message in [
+            SocketMessage::State,
+            SocketMessage::GlobalState,
+            SocketMessage::Query(StateQuery::FocusedMonitorIndex),
+            SocketMessage::Stop,
+            SocketMessage::StopIgnoreRestore,
+            SocketMessage::AddSubscriberSocket("test".into()),
+        ] {
+            assert!(!wm.should_ignore_command_on_virtual_desktop(&message, Some(&[2])));
+        }
+        assert!(wm.should_ignore_command_on_virtual_desktop(
+            &SocketMessage::FocusWorkspaceNumber(1),
+            Some(&[2])
+        ));
+        assert!(!wm.should_ignore_command_on_virtual_desktop(
+            &SocketMessage::FocusWorkspaceNumber(1),
+            Some(&[1])
+        ));
+        assert!(!wm.should_ignore_command_on_virtual_desktop(
+            &SocketMessage::FocusWorkspaceNumber(1),
+            None
+        ));
+        // An actual state request must still produce a usable response, regardless
+        // of whether the registry desktop matches the configured association.
+        let mut reply = Vec::new();
+        wm.process_command(SocketMessage::State, &mut reply)
+            .unwrap();
+        assert!(serde_json::from_slice::<State>(&reply).is_ok());
+        assert!(api.effects.lock().is_empty());
+        drop(wm);
+        std::fs::remove_file(socket).unwrap();
+    }
+
+    #[test]
+    fn closing_workspace_remaps_names_and_preserves_valid_focus_history() {
+        let socket =
+            std::env::temp_dir().join(format!("close-workspace-{}.sock", uuid::Uuid::new_v4()));
+        let (_tx, rx) = crossbeam_channel::unbounded();
+        let mut wm = WindowManager::new_with_window_api(
+            rx,
+            Some(socket.clone()),
+            Arc::new(FakeWindowApi::default()),
+        )
+        .unwrap();
+        wm.virtual_desktop_id = None;
+        let mut monitor = crate::monitor::new(
+            0,
+            Rect::default(),
+            Rect::default(),
+            "m".into(),
+            "d".into(),
+            "id".into(),
+            None,
+        );
+        monitor.ensure_workspace_count(3);
+        monitor.workspace_names.insert(2, "last".into());
+        monitor.workspaces_mut()[2].name = Some("last".into());
+        monitor.focus_workspace(2).unwrap();
+        monitor.focus_workspace(1).unwrap();
+        wm.monitors_mut().push_back(monitor);
+        wm.process_command(SocketMessage::CloseWorkspace, Vec::new())
+            .unwrap();
+        let monitor = &wm.monitors()[0];
+        assert_eq!(monitor.workspaces().len(), 2);
+        assert_eq!(monitor.focused_workspace_idx(), 0);
+        assert_eq!(monitor.last_focused_workspace, Some(1));
+        assert_eq!(
+            monitor.workspace_names.get(&1).map(String::as_str),
+            Some("last")
+        );
+        assert!(!monitor.workspace_names.contains_key(&2));
+        drop(wm);
+        std::fs::remove_file(socket).unwrap();
+    }
+
+    #[test]
+    fn eager_focus_selects_requested_float_before_loading_hidden_workspace() {
+        let socket =
+            std::env::temp_dir().join(format!("eager-float-{}.sock", uuid::Uuid::new_v4()));
+        let api = Arc::new(FakeWindowApi::default());
+        let (_tx, rx) = crossbeam_channel::unbounded();
+        let mut wm =
+            WindowManager::new_with_window_api(rx, Some(socket.clone()), api.clone()).unwrap();
+        let mut monitor = crate::monitor::new(
+            0,
+            Rect::default(),
+            Rect::default(),
+            "m".into(),
+            "d".into(),
+            "id".into(),
+            None,
+        );
+        monitor.ensure_workspace_count(2);
+        let workspace: &mut Workspace = &mut monitor.workspaces_mut()[1];
+        let mut tiled = Container::default();
+        tiled.windows_mut().push_back(Window::from(100));
+        workspace.add_container_to_back(tiled);
+        workspace
+            .floating_windows_mut()
+            .extend([Window::from(101), Window::from(102)]);
+        workspace.floating_windows.focus(0);
+        workspace.layer = WorkspaceLayer::Tiling;
+        wm.monitors_mut().push_back(monitor);
+        // This is the same deferred-loading path used when EagerFocus finds a
+        // floating application on a previously hidden workspace.
+        wm.monitors_mut()[0].focus_workspace(1).unwrap();
+        wm.focus_eager_floating_window(1).unwrap();
+        let workspace = wm.focused_workspace().unwrap();
+        assert_eq!(workspace.layer, WorkspaceLayer::Floating);
+        assert_eq!(
+            workspace.focused_floating_window(),
+            Some(&Window::from(102))
+        );
+        assert_eq!(api.effects.lock().as_slice(), &[("focus", 102)]);
+        // The inverse request must also switch layers: a tiled app requested on
+        // a workspace last used in Floating mode must survive deferred restore.
+        wm.select_eager_tiled_container(0).unwrap();
+        let workspace = wm.focused_workspace().unwrap();
+        assert_eq!(workspace.layer, WorkspaceLayer::Tiling);
+        assert_eq!(
+            workspace.focused_container().unwrap().focused_window(),
+            Some(&Window::from(100))
+        );
+        assert_eq!(
+            workspace.focused_floating_window(),
+            Some(&Window::from(102))
+        );
+        drop(wm);
+        std::fs::remove_file(socket).unwrap();
     }
 }

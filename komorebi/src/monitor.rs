@@ -371,17 +371,37 @@ impl Monitor {
 
     pub fn remove_workspace_by_idx(&mut self, idx: usize) -> Option<Workspace> {
         if !self.native_desktop_workspaces {
-            if idx < self.workspaces().len() {
-                return self.workspaces_mut().remove(idx);
-            }
-
-            if idx == 0 {
+            let focused_idx = self.focused_workspace_idx();
+            let removed = self.workspaces_mut().remove(idx)?;
+            self.workspace_names = std::mem::take(&mut self.workspace_names)
+                .into_iter()
+                .filter_map(|(index, name)| {
+                    if index == idx {
+                        None
+                    } else {
+                        Some((if index > idx { index - 1 } else { index }, name))
+                    }
+                })
+                .collect();
+            if self.workspaces().is_empty() {
                 self.workspaces_mut().push_back(Workspace::default());
+            }
+            let new_focus = if idx <= focused_idx {
+                focused_idx.saturating_sub(1)
             } else {
-                self.focus_workspace(idx.saturating_sub(1)).ok()?;
+                focused_idx
             };
-
-            None
+            self.workspaces
+                .focus(new_focus.min(self.workspaces().len() - 1));
+            self.last_focused_workspace = self.last_focused_workspace.map(|last| {
+                let shifted = if idx <= last {
+                    last.saturating_sub(1)
+                } else {
+                    last
+                };
+                shifted.min(self.workspaces().len() - 1)
+            });
+            Some(removed)
         } else {
             let _ = idx;
             tracing::warn!("removing workspaces independently of native desktops is not supported");
@@ -669,6 +689,33 @@ mod tests {
 
         // Should have only 2 workspaces
         assert_eq!(m.workspaces().len(), 2);
+    }
+
+    #[test]
+    fn removing_workspaces_preserves_selection_and_never_empties_monitor() {
+        let mut m = Monitor::placeholder();
+        m.ensure_workspace_count(3);
+        m.workspace_names.insert(2, "selected".into());
+        m.focus_workspace(2).unwrap();
+        assert!(m.remove_workspace_by_idx(0).is_some());
+        assert_eq!(m.focused_workspace_idx(), 1);
+        m.focus_workspace(1).unwrap();
+        assert_eq!(
+            m.workspace_names.get(&1).map(String::as_str),
+            Some("selected")
+        );
+        assert_eq!(
+            m.focused_workspace().unwrap().name.as_deref(),
+            Some("selected")
+        );
+        assert!(m.remove_workspace_by_idx(1).is_some());
+        assert_eq!(m.focused_workspace_idx(), 0);
+        assert!(m.remove_workspace_by_idx(0).is_some());
+        assert_eq!(m.workspaces().len(), 1);
+        assert!(m.focused_workspace().is_some());
+        let before = m.clone();
+        assert!(m.remove_workspace_by_idx(99).is_none());
+        assert_eq!(m, before);
     }
 
     #[test]

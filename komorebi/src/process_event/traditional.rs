@@ -7,6 +7,80 @@ impl WindowManager {
         &mut self,
         event: WindowManagerEvent,
     ) -> eyre::Result<bool> {
+        self.traditional_process_event_with_virtual_desktop(event, current_virtual_desktop())
+    }
+
+    fn traditional_process_event_with_virtual_desktop(
+        &mut self,
+        event: WindowManagerEvent,
+        latest_virtual_desktop_id: Option<Vec<u8>>,
+    ) -> eyre::Result<bool> {
+        {
+            let mut last_known_virtual_desktop_id = CURRENT_VIRTUAL_DESKTOP.lock();
+
+            if let Some(virtual_desktop_id) = &self.virtual_desktop_id {
+                if let Some(id) = latest_virtual_desktop_id {
+                    // if we are on the vd associated with komorebi
+                    let should_retile = id == *virtual_desktop_id
+                    // and we came from a vd not associated with komorebi
+                    && (*last_known_virtual_desktop_id).clone().unwrap_or_default() != id;
+
+                    let desktop_changed = last_known_virtual_desktop_id.as_ref() != Some(&id);
+                    *last_known_virtual_desktop_id = Some(id.clone());
+                    drop(last_known_virtual_desktop_id);
+                    if id != *virtual_desktop_id {
+                        if !desktop_changed {
+                            return Ok(false);
+                        }
+                        tracing::info!(
+                            "ignoring events and commands while not on virtual desktop {:?}",
+                            virtual_desktop_id
+                        );
+
+                        border_manager::destroy_all_borders()?;
+
+                        // to be consumed by integrating gui applications like bars to know
+                        // when to hide visual components which don't make sense when not on
+                        // komorebi's associated virtual desktop
+                        tracing::debug!(
+                            "notifying subscribers that we have left komorebi's associated virtual desktop"
+                        );
+                        notify_subscribers(
+                            Notification {
+                                event: NotificationEvent::VirtualDesktop(
+                                    VirtualDesktopNotification::LeftAssociatedVirtualDesktop,
+                                ),
+                                state: self.as_ref().into(),
+                            },
+                            true,
+                        )?;
+
+                        return Ok(false);
+                    }
+
+                    if should_retile {
+                        self.retile_all(true)?;
+
+                        // to be consumed by integrating gui applications like bars to know
+                        // when to show visual components associated with komorebi's virtual
+                        // desktop
+                        tracing::debug!(
+                            "notifying subscribers that we are back on komorebi's associated virtual desktop"
+                        );
+                        notify_subscribers(
+                            Notification {
+                                event: NotificationEvent::VirtualDesktop(
+                                    VirtualDesktopNotification::EnteredAssociatedVirtualDesktop,
+                                ),
+                                state: self.as_ref().into(),
+                            },
+                            true,
+                        )?;
+                    }
+                }
+            }
+        }
+
         if self.is_paused {
             tracing::trace!("ignoring while paused");
             return Ok(false);
@@ -60,69 +134,6 @@ impl WindowManager {
                 }
 
                 return Ok(false);
-            }
-        }
-
-        let mut last_known_virtual_desktop_id = CURRENT_VIRTUAL_DESKTOP.lock();
-
-        if let Some(virtual_desktop_id) = &self.virtual_desktop_id {
-            let latest_virtual_desktop_id = current_virtual_desktop();
-            if let Some(id) = latest_virtual_desktop_id {
-                // if we are on the vd associated with komorebi
-                let should_retile = id == *virtual_desktop_id
-                    // and we came from a vd not associated with komorebi
-                    && (*last_known_virtual_desktop_id).clone().unwrap_or_default() != id;
-
-                *last_known_virtual_desktop_id = Some(id.clone());
-                if id != *virtual_desktop_id {
-                    tracing::info!(
-                        "ignoring events and commands while not on virtual desktop {:?}",
-                        virtual_desktop_id
-                    );
-
-                    // TODO: when returning from another VD to the VD associated with komorebi
-                    // if borders are enabled, they will not be drawn again until the user interacts
-                    // with the workspace or forces a retile
-                    border_manager::destroy_all_borders()?;
-
-                    // to be consumed by integrating gui applications like bars to know
-                    // when to hide visual components which don't make sense when not on
-                    // komorebi's associated virtual desktop
-                    tracing::debug!(
-                        "notifying subscribers that we have left komorebi's associated virtual desktop"
-                    );
-                    notify_subscribers(
-                        Notification {
-                            event: NotificationEvent::VirtualDesktop(
-                                VirtualDesktopNotification::LeftAssociatedVirtualDesktop,
-                            ),
-                            state: self.as_ref().into(),
-                        },
-                        true,
-                    )?;
-
-                    return Ok(false);
-                }
-
-                if should_retile {
-                    self.retile_all(true)?;
-
-                    // to be consumed by integrating gui applications like bars to know
-                    // when to show visual components associated with komorebi's virtual
-                    // desktop
-                    tracing::debug!(
-                        "notifying subscribers that we are back on komorebi's associated virtual desktop"
-                    );
-                    notify_subscribers(
-                        Notification {
-                            event: NotificationEvent::VirtualDesktop(
-                                VirtualDesktopNotification::EnteredAssociatedVirtualDesktop,
-                            ),
-                            state: self.as_ref().into(),
-                        },
-                        true,
-                    )?;
-                }
             }
         }
 
@@ -899,5 +910,68 @@ impl WindowManager {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod desktop_transition_tests {
+    use super::*;
+    use crate::windows_api::FakeWindowApi;
+    use std::io::Read;
+    use uds_windows::UnixListener;
+
+    #[test]
+    fn ignored_windows_still_publish_desktop_departure_and_return() {
+        let socket =
+            std::env::temp_dir().join(format!("desktop-events-{}.sock", uuid::Uuid::new_v4()));
+        let subscriber_path =
+            std::env::temp_dir().join(format!("desktop-sub-{}.sock", uuid::Uuid::new_v4()));
+        let subscriber = UnixListener::bind(&subscriber_path).unwrap();
+        let subscriber_name = format!("desktop-sub-{}", uuid::Uuid::new_v4());
+        crate::SUBSCRIPTION_SOCKETS
+            .lock()
+            .insert(subscriber_name.clone(), subscriber_path.clone());
+        let api = Arc::new(FakeWindowApi::default());
+        let (_tx, rx) = crossbeam_channel::unbounded();
+        let mut wm =
+            WindowManager::new_with_window_api(rx, Some(socket.clone()), api.clone()).unwrap();
+        wm.virtual_desktop_id = Some(vec![1]);
+        let previous = CURRENT_VIRTUAL_DESKTOP.lock().replace(vec![1]);
+        for (desktop, expected) in [
+            (
+                vec![2],
+                VirtualDesktopNotification::LeftAssociatedVirtualDesktop,
+            ),
+            (
+                vec![1],
+                VirtualDesktopNotification::EnteredAssociatedVirtualDesktop,
+            ),
+        ] {
+            assert!(
+                !wm.traditional_process_event_with_virtual_desktop(
+                    WindowManagerEvent::FocusChange(WinEvent::ObjectFocus, Window::from(123)),
+                    Some(desktop.clone()),
+                )
+                .unwrap()
+            );
+            let (mut stream, _) = subscriber.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            stream.read_to_end(&mut bytes).unwrap();
+            let notification: Notification = serde_json::from_slice(&bytes).unwrap();
+            assert!(
+                matches!(notification.event, NotificationEvent::VirtualDesktop(actual) if actual == expected)
+            );
+            assert_eq!(*CURRENT_VIRTUAL_DESKTOP.lock(), Some(desktop));
+        }
+        assert!(api.effects.lock().is_empty());
+        *CURRENT_VIRTUAL_DESKTOP.lock() = previous;
+        crate::SUBSCRIPTION_SOCKETS.lock().remove(&subscriber_name);
+        drop(wm);
+        drop(subscriber);
+        std::fs::remove_file(socket).unwrap();
+        std::fs::remove_file(subscriber_path).unwrap();
     }
 }
