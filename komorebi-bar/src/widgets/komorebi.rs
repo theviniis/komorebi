@@ -826,16 +826,26 @@ impl MonitorInfo {
 
         let monitor = &state.monitors.elements()[self.monitor_index];
         self.work_area_offset = monitor.work_area_offset;
+        let focused_idx = if state.native_desktop_workspaces {
+            state.focused_desktop_idx
+        } else {
+            monitor.focused_workspace_idx()
+        };
+        let workspace_count = if state.native_desktop_workspaces {
+            state.desktop_count
+        } else {
+            monitor.workspaces().len()
+        };
         let Some(focused_ws) = monitor
             .workspaces()
-            .get(state.focused_desktop_idx)
-            .filter(|_| state.focused_desktop_idx < state.desktop_count)
+            .get(focused_idx)
+            .filter(|_| focused_idx < workspace_count)
         else {
             self.focused_workspace_idx = None;
             self.workspaces.clear();
             return;
         };
-        self.focused_workspace_idx = Some(state.focused_desktop_idx);
+        self.focused_workspace_idx = Some(focused_idx);
 
         // Layout follows the global native desktop, not a stale per-monitor ring.
         self.layout = Self::resolve_layout(focused_ws, state.is_paused);
@@ -848,7 +858,7 @@ impl MonitorInfo {
             monitor
                 .workspaces()
                 .iter()
-                .take(state.desktop_count)
+                .take(workspace_count)
                 .enumerate(),
         ));
     }
@@ -1071,10 +1081,30 @@ mod native_desktop_tests {
             focus_follows_mouse: None,
             mouse_follows_focus: true,
             has_pending_raise_op: false,
+            native_desktop_workspaces: true,
             focused_desktop_idx: 1,
             desktop_count: 2,
         }
     }
+    #[test]
+    fn traditional_bar_uses_each_monitors_focus_and_workspace_count() {
+        let mut state = state();
+        state.native_desktop_workspaces = false;
+        state.focused_desktop_idx = 99;
+        state.desktop_count = 99;
+        state.monitors.elements_mut()[0].focus_workspace(0).unwrap();
+        state.monitors.elements_mut()[1]
+            .workspaces_mut()
+            .push_back(Workspace::default());
+        state.monitors.elements_mut()[1].focus_workspace(2).unwrap();
+        for (m, focus, count) in [(0, 0, 2), (1, 2, 3)] {
+            let mut info = MonitorInfo::default();
+            info.update(Some(m), state.clone(), false);
+            assert_eq!(info.focused_workspace_idx, Some(focus));
+            assert_eq!(info.workspaces.len(), count);
+        }
+    }
+
     #[test]
     fn bar_uses_global_native_focus_on_every_monitor_even_with_stale_rings() {
         for m in 0..2 {

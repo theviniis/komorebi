@@ -1,3 +1,5 @@
+use crate::current_virtual_desktop;
+use crate::workspace::WorkspaceWindowLocation;
 use color_eyre::eyre;
 use color_eyre::eyre::OptionExt;
 use color_eyre::eyre::WrapErr;
@@ -193,6 +195,18 @@ impl WindowManager {
         message: SocketMessage,
         mut reply: impl std::io::Write,
     ) -> eyre::Result<()> {
+        if !self.native_desktop_workspaces {
+            if let Some(virtual_desktop_id) = &self.virtual_desktop_id
+                && let Some(id) = current_virtual_desktop()
+                && id != *virtual_desktop_id
+            {
+                tracing::info!(
+                    "ignoring events and commands while not on virtual desktop {:?}",
+                    virtual_desktop_id
+                );
+                return Ok(());
+            }
+        }
         let initial_state = State::from(self.as_ref());
         let result = self.process_command_inner(message.clone(), &mut reply);
         self.update_known_hwnds();
@@ -254,15 +268,92 @@ impl WindowManager {
                 self.promote_container_to_front()?
             }
             SocketMessage::EagerFocus(ref exe) => {
-                self.update_known_hwnds();
-                let mut candidates = self.known_hwnds.keys().copied().collect::<Vec<_>>();
-                candidates.sort_unstable();
-                if let Some(hwnd) = candidates.into_iter().find(|&hwnd| {
-                    self.window_api
-                        .identifiers(Window::from(hwnd))
-                        .is_ok_and(|ids| ids.exe == *exe)
-                }) {
-                    self.focus_managed_window(hwnd)?;
+                if !self.native_desktop_workspaces {
+                    let focused_monitor_idx = self.focused_monitor_idx();
+
+                    let mut window_location = None;
+                    let mut monitor_to_focus = None;
+                    let mut needs_workspace_loading = false;
+
+                    'search: for (monitor_idx, monitor) in
+                        self.monitors_mut().iter_mut().enumerate()
+                    {
+                        for (workspace_idx, workspace) in monitor.workspaces().iter().enumerate() {
+                            if let Some(location) = workspace.location_from_exe(exe) {
+                                window_location = Some(location);
+
+                                if monitor_idx != focused_monitor_idx {
+                                    monitor_to_focus = Some(monitor_idx);
+                                }
+
+                                // Focus workspace if it is not already the focused one, without
+                                // loading it so that we don't give focus to the wrong window, we will
+                                // load it later after focusing the wanted window
+                                let focused_ws_idx = monitor.focused_workspace_idx();
+                                if focused_ws_idx != workspace_idx {
+                                    monitor.last_focused_workspace = Option::from(focused_ws_idx);
+                                    monitor.focus_workspace(workspace_idx)?;
+                                    needs_workspace_loading = true;
+                                }
+
+                                break 'search;
+                            }
+                        }
+                    }
+
+                    if let Some(monitor_idx) = monitor_to_focus {
+                        self.focus_monitor(monitor_idx)?;
+                    }
+
+                    if let Some(location) = window_location {
+                        match location {
+                            WorkspaceWindowLocation::Monocle(window_idx) => {
+                                self.focus_container_window(window_idx)?;
+                            }
+                            WorkspaceWindowLocation::Maximized => {
+                                if let Some(window) =
+                                    &mut self.focused_workspace_mut()?.maximized_window
+                                {
+                                    window.focus(self.mouse_follows_focus)?;
+                                }
+                            }
+                            WorkspaceWindowLocation::Container(container_idx, window_idx) => {
+                                let focused_container_idx = self.focused_container_idx()?;
+                                if container_idx != focused_container_idx {
+                                    self.focused_workspace_mut()?.focus_container(container_idx);
+                                }
+
+                                self.focus_container_window(window_idx)?;
+                            }
+                            WorkspaceWindowLocation::Floating(window_idx) => {
+                                if let Some(window) = self
+                                    .focused_workspace_mut()?
+                                    .floating_windows_mut()
+                                    .get_mut(window_idx)
+                                {
+                                    window.focus(self.mouse_follows_focus)?;
+                                }
+                            }
+                        }
+
+                        if needs_workspace_loading {
+                            let mouse_follows_focus = self.mouse_follows_focus;
+                            if let Some(monitor) = self.focused_monitor_mut() {
+                                monitor.load_focused_workspace(mouse_follows_focus)?;
+                            }
+                        }
+                    }
+                } else {
+                    self.update_known_hwnds();
+                    let mut candidates = self.known_hwnds.keys().copied().collect::<Vec<_>>();
+                    candidates.sort_unstable();
+                    if let Some(hwnd) = candidates.into_iter().find(|&hwnd| {
+                        self.window_api
+                            .identifiers(Window::from(hwnd))
+                            .is_ok_and(|ids| ids.exe == *exe)
+                    }) {
+                        self.focus_managed_window(hwnd)?;
+                    }
                 }
             }
             SocketMessage::FocusWindow(direction) => {
@@ -741,23 +832,45 @@ impl WindowManager {
                 self.move_container_to_workspace(workspace_idx, true, None)?;
             }
             SocketMessage::CycleMoveContainerToWorkspace(direction) => {
-                let focused_workspace_idx = self.focused_workspace_idx().unwrap_or_default();
-                let desktop_count = self.desktop_count;
+                if !self.native_desktop_workspaces {
+                    let focused_monitor =
+                        self.focused_monitor().ok_or_eyre("there is no monitor")?;
 
-                let workspace_idx = direction.next_idx(
-                    focused_workspace_idx,
-                    NonZeroUsize::new(desktop_count)
-                        .ok_or_eyre("there must be at least one workspace")?,
-                );
+                    let focused_workspace_idx = focused_monitor.focused_workspace_idx();
+                    let workspaces = focused_monitor.workspaces().len();
 
-                self.move_container_to_workspace(workspace_idx, true, None)?;
+                    let workspace_idx = direction.next_idx(
+                        focused_workspace_idx,
+                        NonZeroUsize::new(workspaces)
+                            .ok_or_eyre("there must be at least one workspace")?,
+                    );
+
+                    self.move_container_to_workspace(workspace_idx, true, None)?;
+                } else {
+                    let focused_workspace_idx = self.focused_workspace_idx().unwrap_or_default();
+                    let desktop_count = self.desktop_count;
+
+                    let workspace_idx = direction.next_idx(
+                        focused_workspace_idx,
+                        NonZeroUsize::new(desktop_count)
+                            .ok_or_eyre("there must be at least one workspace")?,
+                    );
+
+                    self.move_container_to_workspace(workspace_idx, true, None)?;
+                }
             }
             SocketMessage::MoveContainerToMonitorNumber(monitor_idx) => {
                 let direction = self.direction_from_monitor_idx(monitor_idx);
                 self.move_container_to_monitor(monitor_idx, None, true, direction)?;
             }
-            SocketMessage::SwapWorkspacesToMonitorNumber(_monitor_idx) => {
-                bail!("swapping workspaces between monitors is not supported with native desktops");
+            SocketMessage::SwapWorkspacesToMonitorNumber(monitor_idx) => {
+                if !self.native_desktop_workspaces {
+                    self.swap_focused_monitor(monitor_idx)?;
+                } else {
+                    bail!(
+                        "swapping workspaces between monitors is not supported with native desktops"
+                    );
+                }
             }
             SocketMessage::CycleMoveContainerToMonitor(direction) => {
                 let monitor_idx = direction.next_idx(
@@ -773,16 +886,32 @@ impl WindowManager {
                 self.move_container_to_workspace(workspace_idx, false, None)?;
             }
             SocketMessage::CycleSendContainerToWorkspace(direction) => {
-                let focused_workspace_idx = self.focused_workspace_idx().unwrap_or_default();
-                let desktop_count = self.desktop_count;
+                if !self.native_desktop_workspaces {
+                    let focused_monitor =
+                        self.focused_monitor().ok_or_eyre("there is no monitor")?;
 
-                let workspace_idx = direction.next_idx(
-                    focused_workspace_idx,
-                    NonZeroUsize::new(desktop_count)
-                        .ok_or_eyre("there must be at least one workspace")?,
-                );
+                    let focused_workspace_idx = focused_monitor.focused_workspace_idx();
+                    let workspaces = focused_monitor.workspaces().len();
 
-                self.move_container_to_workspace(workspace_idx, false, None)?;
+                    let workspace_idx = direction.next_idx(
+                        focused_workspace_idx,
+                        NonZeroUsize::new(workspaces)
+                            .ok_or_eyre("there must be at least one workspace")?,
+                    );
+
+                    self.move_container_to_workspace(workspace_idx, false, None)?;
+                } else {
+                    let focused_workspace_idx = self.focused_workspace_idx().unwrap_or_default();
+                    let desktop_count = self.desktop_count;
+
+                    let workspace_idx = direction.next_idx(
+                        focused_workspace_idx,
+                        NonZeroUsize::new(desktop_count)
+                            .ok_or_eyre("there must be at least one workspace")?,
+                    );
+
+                    self.move_container_to_workspace(workspace_idx, false, None)?;
+                }
             }
             SocketMessage::SendContainerToMonitorNumber(monitor_idx) => {
                 let direction = self.direction_from_monitor_idx(monitor_idx);
@@ -817,13 +946,41 @@ impl WindowManager {
                 )?;
             }
             SocketMessage::SendContainerToNamedWorkspace(ref workspace) => {
-                if let Some((_, d)) = self.monitor_workspace_index_by_name(workspace) {
-                    self.move_container_to_workspace(d, false, None)?;
+                if !self.native_desktop_workspaces {
+                    if let Some((monitor_idx, workspace_idx)) =
+                        self.monitor_workspace_index_by_name(workspace)
+                    {
+                        let direction = self.direction_from_monitor_idx(monitor_idx);
+                        self.move_container_to_monitor(
+                            monitor_idx,
+                            Option::from(workspace_idx),
+                            false,
+                            direction,
+                        )?;
+                    }
+                } else {
+                    if let Some((_, d)) = self.monitor_workspace_index_by_name(workspace) {
+                        self.move_container_to_workspace(d, false, None)?;
+                    }
                 }
             }
             SocketMessage::MoveContainerToNamedWorkspace(ref workspace) => {
-                if let Some((_, d)) = self.monitor_workspace_index_by_name(workspace) {
-                    self.move_container_to_workspace(d, true, None)?;
+                if !self.native_desktop_workspaces {
+                    if let Some((monitor_idx, workspace_idx)) =
+                        self.monitor_workspace_index_by_name(workspace)
+                    {
+                        let direction = self.direction_from_monitor_idx(monitor_idx);
+                        self.move_container_to_monitor(
+                            monitor_idx,
+                            Option::from(workspace_idx),
+                            true,
+                            direction,
+                        )?;
+                    }
+                } else {
+                    if let Some((_, d)) = self.monitor_workspace_index_by_name(workspace) {
+                        self.move_container_to_workspace(d, true, None)?;
+                    }
                 }
             }
 
@@ -1030,7 +1187,35 @@ impl WindowManager {
                 }
             }
             SocketMessage::CycleFocusWorkspace(direction) => {
-                self.focus_adjacent_desktop(direction)?;
+                if !self.native_desktop_workspaces {
+                    // This is to ensure that even on an empty workspace on a secondary monitor, the
+                    // secondary monitor where the cursor is focused will be used as the target for
+                    // the workspace switch op
+                    if let Some(monitor_idx) = self.monitor_idx_from_current_pos()
+                        && monitor_idx != self.focused_monitor_idx()
+                        && let Some(monitor) = self.monitors().get(monitor_idx)
+                        && let Some(workspace) = monitor.focused_workspace()
+                        && workspace.is_empty()
+                    {
+                        self.focus_monitor(monitor_idx)?;
+                    }
+
+                    let focused_monitor =
+                        self.focused_monitor().ok_or_eyre("there is no monitor")?;
+
+                    let focused_workspace_idx = focused_monitor.focused_workspace_idx();
+                    let workspaces = focused_monitor.workspaces().len();
+
+                    let workspace_idx = direction.next_idx(
+                        focused_workspace_idx,
+                        NonZeroUsize::new(workspaces)
+                            .ok_or_eyre("there must be at least one workspace")?,
+                    );
+
+                    self.focus_workspace(workspace_idx)?;
+                } else {
+                    self.focus_adjacent_desktop(direction)?;
+                }
             }
             SocketMessage::CycleFocusEmptyWorkspace(direction) => {
                 // This is to ensure that even on an empty workspace on a secondary monitor, the
@@ -1077,30 +1262,167 @@ impl WindowManager {
                 }
             }
             SocketMessage::CloseWorkspace => {
-                tracing::warn!("close-workspace is a no-op: remove desktops in Task View");
+                if !self.native_desktop_workspaces {
+                    // This is to ensure that even on an empty workspace on a secondary monitor, the
+                    // secondary monitor where the cursor is focused will be used as the target for
+                    // the workspace switch op
+                    if let Some(monitor_idx) = self.monitor_idx_from_current_pos()
+                        && monitor_idx != self.focused_monitor_idx()
+                        && let Some(monitor) = self.monitors().get(monitor_idx)
+                        && let Some(workspace) = monitor.focused_workspace()
+                        && workspace.is_empty()
+                    {
+                        self.focus_monitor(monitor_idx)?;
+                    }
+
+                    let mut can_close = false;
+
+                    if let Some(monitor) = self.focused_monitor_mut() {
+                        let focused_workspace_idx = monitor.focused_workspace_idx();
+                        let next_focused_workspace_idx = focused_workspace_idx.saturating_sub(1);
+
+                        if let Some(workspace) = monitor.focused_workspace()
+                            && monitor.workspaces().len() > 1
+                            && workspace.containers().is_empty()
+                            && workspace.floating_windows().is_empty()
+                            && workspace.monocle_container.is_none()
+                            && workspace.maximized_window.is_none()
+                            && workspace.name.is_none()
+                        {
+                            can_close = true;
+                        }
+
+                        if can_close
+                            && monitor
+                                .workspaces_mut()
+                                .remove(focused_workspace_idx)
+                                .is_some()
+                        {
+                            self.focus_workspace(next_focused_workspace_idx)?;
+                        }
+                    }
+                } else {
+                    tracing::warn!("close-workspace is a no-op: remove desktops in Task View");
+                }
             }
             SocketMessage::FocusLastWorkspace => {
-                if let Some(last) = self
-                    .focused_monitor()
-                    .and_then(|m| m.last_focused_workspace)
-                    && last != self.focused_desktop_idx
-                {
-                    self.focus_desktop(last)?;
+                if !self.native_desktop_workspaces {
+                    // This is to ensure that even on an empty workspace on a secondary monitor, the
+                    // secondary monitor where the cursor is focused will be used as the target for
+                    // the workspace switch op
+                    if let Some(monitor_idx) = self.monitor_idx_from_current_pos()
+                        && monitor_idx != self.focused_monitor_idx()
+                        && let Some(monitor) = self.monitors().get(monitor_idx)
+                        && let Some(workspace) = monitor.focused_workspace()
+                        && workspace.is_empty()
+                    {
+                        self.focus_monitor(monitor_idx)?;
+                    }
+
+                    let idx = self
+                        .focused_monitor()
+                        .ok_or_eyre("there is no monitor")?
+                        .focused_workspace_idx();
+
+                    if let Some(monitor) = self.focused_monitor_mut()
+                        && let Some(last_focused_workspace) = monitor.last_focused_workspace
+                    {
+                        self.focus_workspace(last_focused_workspace)?;
+                    }
+
+                    self.focused_monitor_mut()
+                        .ok_or_eyre("there is no monitor")?
+                        .last_focused_workspace = Option::from(idx);
+                } else {
+                    if let Some(last) = self
+                        .focused_monitor()
+                        .and_then(|m| m.last_focused_workspace)
+                        && last != self.focused_desktop_idx
+                    {
+                        self.focus_desktop(last)?;
+                    }
                 }
             }
-            SocketMessage::FocusWorkspaceNumber(d) | SocketMessage::FocusWorkspaceNumbers(d) => {
-                if self.focused_desktop_idx != d {
-                    self.focus_desktop(d)?;
+            SocketMessage::FocusWorkspaceNumber(workspace_idx) => {
+                if !self.native_desktop_workspaces {
+                    // This is to ensure that even on an empty workspace on a secondary monitor, the
+                    // secondary monitor where the cursor is focused will be used as the target for
+                    // the workspace switch op
+                    if let Some(monitor_idx) = self.monitor_idx_from_current_pos()
+                        && monitor_idx != self.focused_monitor_idx()
+                        && let Some(monitor) = self.monitors().get(monitor_idx)
+                        && let Some(workspace) = monitor.focused_workspace()
+                        && workspace.is_empty()
+                    {
+                        self.focus_monitor(monitor_idx)?;
+                    }
+
+                    if self.focused_workspace_idx().unwrap_or_default() != workspace_idx {
+                        self.focus_workspace(workspace_idx)?;
+                    }
+                } else {
+                    if self.focused_desktop_idx != workspace_idx {
+                        self.focus_desktop(workspace_idx)?;
+                    }
                 }
             }
-            SocketMessage::FocusMonitorWorkspaceNumber(m, d) => {
-                self.validate_window_destination(m, d)?;
-                self.focus_desktop(d)?;
-                self.focus_monitor(m)?;
+            SocketMessage::FocusWorkspaceNumbers(workspace_idx) => {
+                if self.native_desktop_workspaces {
+                    self.focus_desktop(workspace_idx)?;
+                } else {
+                    // This is to ensure that even on an empty workspace on a secondary monitor, the
+                    // secondary monitor where the cursor is focused will be used as the target for
+                    // the workspace switch op
+                    if let Some(monitor_idx) = self.monitor_idx_from_current_pos()
+                        && monitor_idx != self.focused_monitor_idx()
+                        && let Some(monitor) = self.monitors().get(monitor_idx)
+                        && let Some(workspace) = monitor.focused_workspace()
+                        && workspace.is_empty()
+                    {
+                        self.focus_monitor(monitor_idx)?;
+                    }
+
+                    let focused_monitor_idx = self.focused_monitor_idx();
+
+                    for (i, monitor) in self.monitors_mut().iter_mut().enumerate() {
+                        if i != focused_monitor_idx {
+                            monitor.focus_workspace(workspace_idx)?;
+                            monitor.load_focused_workspace(false)?;
+                        }
+                    }
+
+                    self.focus_workspace(workspace_idx)?;
+                }
+            }
+            SocketMessage::FocusMonitorWorkspaceNumber(monitor_idx, workspace_idx) => {
+                if !self.native_desktop_workspaces {
+                    let focused_monitor_idx = self.focused_monitor_idx();
+                    let focused_workspace_idx = self.focused_workspace_idx().unwrap_or_default();
+
+                    let focused_pair = (focused_monitor_idx, focused_workspace_idx);
+
+                    if focused_pair != (monitor_idx, workspace_idx) {
+                        self.focus_monitor(monitor_idx)?;
+                        self.focus_workspace(workspace_idx)?;
+                    }
+                } else {
+                    self.validate_window_destination(monitor_idx, workspace_idx)?;
+                    self.focus_desktop(workspace_idx)?;
+                    self.focus_monitor(monitor_idx)?;
+                }
             }
             SocketMessage::FocusNamedWorkspace(ref name) => {
-                if let Some((_, d)) = self.monitor_workspace_index_by_name(name) {
-                    self.focus_desktop(d)?;
+                if !self.native_desktop_workspaces {
+                    if let Some((monitor_idx, workspace_idx)) =
+                        self.monitor_workspace_index_by_name(name)
+                    {
+                        self.focus_monitor(monitor_idx)?;
+                        self.focus_workspace(workspace_idx)?;
+                    }
+                } else {
+                    if let Some((_, d)) = self.monitor_workspace_index_by_name(name) {
+                        self.focus_desktop(d)?;
+                    }
                 }
             }
             SocketMessage::ToggleWorkspaceLayer => {
@@ -1558,10 +1880,11 @@ impl WindowManager {
                     self.restore_all_windows(false)?;
 
                     // Create a new wm from the config path
-                    let mut wm = StaticConfig::preload(
+                    let mut wm = StaticConfig::preload_with_mode(
                         config,
                         winevent_listener::event_rx(),
                         self.command_listener.try_clone().ok(),
+                        Some(self.native_desktop_workspaces),
                     )?;
 
                     // Initialize the new wm
@@ -2299,6 +2622,7 @@ mod tests {
             Some("TestMonitorID".to_string()),
         );
 
+        wm.native_desktop_workspaces = true;
         wm.monitors_mut().push_back(m);
 
         // Sync desktop count to create the workspaces

@@ -383,6 +383,11 @@
       ],
       "default": true
     },
+    "native_desktop_workspaces": {
+      "description": "Opt in to native Windows desktop workspaces. Changing this requires restarting komorebi.",
+      "type": "boolean",
+      "default": false
+    },
     "object_name_change_applications": {
       "description": "Identify applications that send `EVENT_OBJECT_NAMECHANGE` on launch (very rare)",
       "type": [
@@ -3574,7 +3579,7 @@
           "format": "int32"
         },
         "workspaces": {
-          "description": "Layout/configuration for existing native desktop indices; excess entries do not create desktops.",
+          "description": "Workspace configurations. In native mode, entries configure existing desktops; excess entries do not create desktops.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/WorkspaceConfig"
@@ -4422,7 +4427,7 @@
           }
         },
         "name": {
-          "description": "Legacy workspace name retained for compatibility. Displayed names come from Windows; this field does not rename desktops.",
+          "description": "Workspace name. In native mode, displayed names come from Windows and this field does not rename desktops.",
           "type": "string"
         },
         "tile": {

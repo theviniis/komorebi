@@ -79,7 +79,11 @@ use state::State;
 use uds_windows::UnixStream;
 use which::which;
 
+use winreg::RegKey;
+use winreg::enums::HKEY_CURRENT_USER;
+
 lazy_static! {
+    static ref CURRENT_VIRTUAL_DESKTOP: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
     static ref HIDDEN_HWNDS: Arc<Mutex<Vec<isize>>> = Arc::new(Mutex::new(vec![]));
     static ref LAYERED_WHITELIST: Arc<Mutex<Vec<MatchingRule>>> = Arc::new(Mutex::new(vec![
         MatchingRule::Simple(IdWithIdentifier {
@@ -303,6 +307,7 @@ pub enum NotificationEvent {
     Socket(SocketMessage),
     Monitor(MonitorNotification),
     Desktop(DesktopNotification),
+    VirtualDesktop(VirtualDesktopNotification),
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq)]
@@ -472,7 +477,6 @@ mod test_environment {
     }
 }
 
-
 /// Process the startup update directly: enqueueing it can deadlock a consumer
 /// whose bounded queue was filled before its worker started.
 pub(crate) fn notifications_with_initial<T>(
@@ -493,11 +497,64 @@ mod notification_startup_tests {
                     sender.try_send(value).unwrap();
                 }
                 drop(sender);
-                let updates = super::notifications_with_initial(receiver, usize::MAX)
+                let updates =
+                    super::notifications_with_initial(receiver, usize::MAX).collect::<Vec<_>>();
+                let expected = std::iter::once(usize::MAX)
+                    .chain(0..pending)
                     .collect::<Vec<_>>();
-                let expected = std::iter::once(usize::MAX).chain(0..pending).collect::<Vec<_>>();
                 assert_eq!(updates, expected);
             }
         }
     }
+}
+
+#[must_use]
+pub fn current_virtual_desktop() -> Option<Vec<u8>> {
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+
+    // This is the path on Windows 10
+    let mut current = hkcu
+        .open_subkey(format!(
+            r#"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\SessionInfo\{}\VirtualDesktops"#,
+            SESSION_ID.load(Ordering::SeqCst)
+        ))
+        .ok()
+        .and_then(
+            |desktops| match desktops.get_raw_value("CurrentVirtualDesktop") {
+                Ok(current) => Option::from(current.bytes),
+                Err(_) => None,
+            },
+        );
+
+    // This is the path on Windows 11
+    if current.is_none() {
+        current = hkcu
+            .open_subkey(r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VirtualDesktops")
+            .ok()
+            .and_then(
+                |desktops| match desktops.get_raw_value("CurrentVirtualDesktop") {
+                    Ok(current) => Option::from(current.bytes),
+                    Err(_) => None,
+                },
+            );
+    }
+
+    // For Win10 users that do not use virtual desktops, the CurrentVirtualDesktop value will not
+    // exist until one has been created in the task view
+
+    // The registry value will also not exist on user login if virtual desktops have been created
+    // but the task view has not been initiated
+
+    // In both of these cases, we return None, and the virtual desktop validation will never run. In
+    // the latter case, if the user desires this validation after initiating the task view, komorebi
+    // should be restarted, and then when this // fn runs again for the first time, it will pick up
+    // the value of CurrentVirtualDesktop and validate against it accordingly
+    current.map(|current| current.to_vec())
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum VirtualDesktopNotification {
+    EnteredAssociatedVirtualDesktop,
+    LeftAssociatedVirtualDesktop,
 }

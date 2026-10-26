@@ -1,3 +1,5 @@
+mod traditional;
+
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -145,7 +147,18 @@ impl WindowManager {
         }
 
         let initial_state = State::from(self.as_ref());
-        let result = self.process_event_inner(event);
+        let result = if self.native_desktop_workspaces {
+            self.process_event_inner(event)
+        } else {
+            match event {
+                WindowManagerEvent::DesktopChanged { .. }
+                | WindowManagerEvent::DesktopCountChanged
+                | WindowManagerEvent::DesktopMoved { .. }
+                | WindowManagerEvent::DesktopRenamed { .. }
+                | WindowManagerEvent::WindowDesktopChanged { .. } => Ok(false),
+                _ => self.traditional_process_event(event),
+            }
+        };
         // Every exit, including errors after partial mutations, refreshes derived caches.
         self.update_known_hwnds();
         if initial_state.has_been_modified(self.as_ref()) || matches!(&result, Ok(true)) {
@@ -186,7 +199,7 @@ impl WindowManager {
 
         let should_manage =
             self.window_api
-                .should_manage(event.window(), event, &mut rule_debug)?;
+                .should_manage(event.window(), event, &mut rule_debug, true)?;
 
         // All event handlers below this point should only be processed if the event is
         // related to a window that should be managed by the WindowManager.

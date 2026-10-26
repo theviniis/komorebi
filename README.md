@@ -64,9 +64,9 @@ komorebi for Mac lives [here](https://github.com/LGUG2Z/komorebi-for-mac) :)
 _komorebi_ is a tiling window manager that works as an extension to Microsoft's
 [Desktop Window
 Manager](https://docs.microsoft.com/en-us/windows/win32/dwm/dwm-overview) in
-Windows 11 24H2 (build 26100.2605) and above.
+Windows 10 and above.
 
-> **Note:** This branch maps workspaces to native Windows virtual desktops and requires Windows 11 24H2 build 26100.2605 or newer. Create, remove and reorder desktops in Task View. Windows 10 is not supported. See the [migration guide](docs/native-desktop-workspaces.md) for command and configuration compatibility.
+> **Native desktop integration is optional:** set `"native_desktop_workspaces": true` in `komorebi.json` and restart komorebi. Only native mode requires Windows 11 24H2 build 26100.2605 or newer. Omit the option or set it to `false` for traditional per-monitor workspaces. See the [configuration guide](docs/native-desktop-workspaces.md).
 
 _komorebi_ allows you to control application windows, virtual workspaces and display monitors with a CLI which can be
 used with third-party software such as [`whkd`](https://github.com/LGUG2Z/whkd)

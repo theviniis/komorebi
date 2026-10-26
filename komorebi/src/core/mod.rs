@@ -92,9 +92,9 @@ pub enum SocketMessage {
     MoveContainerToMonitorWorkspaceNumber(usize, usize),
     SendContainerToNamedWorkspace(String),
     CycleMoveWorkspaceToMonitor(CycleDirection),
-    /// Unsupported: native desktops are global across monitors.
+    /// Move a workspace between monitors; unsupported in native mode.
     MoveWorkspaceToMonitorNumber(usize),
-    /// Unsupported: desktops are global and cannot be swapped between monitors.
+    /// Swap monitor workspaces; unsupported in native mode.
     SwapWorkspacesToMonitorNumber(usize),
     ForceFocus,
     Close,
@@ -134,11 +134,11 @@ pub enum SocketMessage {
     // Monitor and Workspace Commands
     MonitorIndexPreference(usize, i32, i32, i32, i32),
     DisplayIndexPreference(usize, String),
-    /// Compatibility no-op: native desktops are created in Windows Task View.
+    /// In native mode, compatibility no-op: native desktops are created in Windows Task View.
     EnsureWorkspaces(usize, usize),
-    /// Compatibility no-op: native desktop creation and naming belong to Task View.
+    /// In native mode, compatibility no-op: native desktop creation and naming belong to Task View.
     EnsureNamedWorkspaces(usize, Vec<String>),
-    /// Compatibility no-op: create a desktop in Windows Task View.
+    /// In native mode, compatibility no-op: create a desktop in Windows Task View.
     NewWorkspace,
     ToggleTiling,
     Stop,
@@ -156,11 +156,11 @@ pub enum SocketMessage {
     FocusMonitorNumber(usize),
     FocusMonitorAtCursor,
     FocusLastWorkspace,
-    /// Compatibility no-op: remove a desktop in Windows Task View.
+    /// In native mode, compatibility no-op: remove a desktop in Windows Task View.
     CloseWorkspace,
-    /// Switch the global native desktop by zero-based index.
+    /// Focus a workspace by zero-based index; global desktop in native mode.
     FocusWorkspaceNumber(usize),
-    /// Alias for FocusWorkspaceNumber; affects every monitor.
+    /// Focus a workspace on all monitors; alias for FocusWorkspaceNumber in native mode.
     FocusWorkspaceNumbers(usize),
     FocusMonitorWorkspaceNumber(usize, usize),
     FocusNamedWorkspace(String),

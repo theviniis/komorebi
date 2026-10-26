@@ -3209,6 +3209,9 @@
         },
         {
           "$ref": "#/$defs/DesktopNotification"
+        },
+        {
+          "$ref": "#/$defs/VirtualDesktopNotification"
         }
       ]
     },
@@ -3984,7 +3987,7 @@
           ]
         },
         {
-          "description": "Unsupported: native desktops are global across monitors.",
+          "description": "Move a workspace between monitors; unsupported in native mode.",
           "type": "object",
           "properties": {
             "content": {
@@ -4003,7 +4006,7 @@
           ]
         },
         {
-          "description": "Unsupported: desktops are global and cannot be swapped between monitors.",
+          "description": "Swap monitor workspaces; unsupported in native mode.",
           "type": "object",
           "properties": {
             "content": {
@@ -4649,7 +4652,7 @@
           ]
         },
         {
-          "description": "Compatibility no-op: native desktops are created in Windows Task View.",
+          "description": "In native mode, compatibility no-op: native desktops are created in Windows Task View.",
           "type": "object",
           "properties": {
             "content": {
@@ -4680,7 +4683,7 @@
           ]
         },
         {
-          "description": "Compatibility no-op: native desktop creation and naming belong to Task View.",
+          "description": "In native mode, compatibility no-op: native desktop creation and naming belong to Task View.",
           "type": "object",
           "properties": {
             "content": {
@@ -4712,7 +4715,7 @@
           ]
         },
         {
-          "description": "Compatibility no-op: create a desktop in Windows Task View.",
+          "description": "In native mode, compatibility no-op: create a desktop in Windows Task View.",
           "type": "object",
           "properties": {
             "type": {
@@ -4943,7 +4946,7 @@
           ]
         },
         {
-          "description": "Compatibility no-op: remove a desktop in Windows Task View.",
+          "description": "In native mode, compatibility no-op: remove a desktop in Windows Task View.",
           "type": "object",
           "properties": {
             "type": {
@@ -4956,7 +4959,7 @@
           ]
         },
         {
-          "description": "Switch the global native desktop by zero-based index.",
+          "description": "Focus a workspace by zero-based index; global desktop in native mode.",
           "type": "object",
           "properties": {
             "content": {
@@ -4975,7 +4978,7 @@
           ]
         },
         {
-          "description": "Alias for FocusWorkspaceNumber; affects every monitor.",
+          "description": "Focus a workspace on all monitors; alias for FocusWorkspaceNumber in native mode.",
           "type": "object",
           "properties": {
             "content": {
@@ -7161,6 +7164,10 @@
         "mouse_follows_focus": {
           "type": "boolean"
         },
+        "native_desktop_workspaces": {
+          "type": "boolean",
+          "default": false
+        },
         "new_window_behaviour": {
           "$ref": "#/$defs/WindowContainerBehaviour"
         },
@@ -7372,6 +7379,13 @@
           "type": "string",
           "const": "Light"
         }
+      ]
+    },
+    "VirtualDesktopNotification": {
+      "type": "string",
+      "enum": [
+        "EnteredAssociatedVirtualDesktop",
+        "LeftAssociatedVirtualDesktop"
       ]
     },
     "Wallpaper": {
@@ -8497,7 +8511,7 @@
           }
         },
         "name": {
-          "description": "Legacy workspace name retained for compatibility. Displayed names come from Windows; this field does not rename desktops.",
+          "description": "Workspace name. In native mode, displayed names come from Windows and this field does not rename desktops.",
           "type": "string"
         },
         "tile": {

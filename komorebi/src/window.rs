@@ -997,6 +997,15 @@ impl Window {
         event: Option<WindowManagerEvent>,
         debug: &mut RuleDebug,
     ) -> eyre::Result<bool> {
+        self.should_manage_with_native_desktops(event, debug, false)
+    }
+
+    pub fn should_manage_with_native_desktops(
+        self,
+        event: Option<WindowManagerEvent>,
+        debug: &mut RuleDebug,
+        native_desktop_workspaces: bool,
+    ) -> eyre::Result<bool> {
         if !self.is_window() {
             return Ok(false);
         }
@@ -1038,7 +1047,8 @@ impl Window {
             allow_cloaked = true;
         }
 
-        if is_cloaked
+        if native_desktop_workspaces
+            && is_cloaked
             && matches!(
                 event,
                 Some(

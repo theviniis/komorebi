@@ -1,0 +1,8 @@
+schema.json: JSON and local references valid
+native_desktop_workspaces: optional boolean, default=false
+schema.asc.json: JSON and local references valid
+schema.notification.json: JSON and local references valid
+schema.socket.json: JSON and local references valid
+schema.bar.json: JSON and local references valid
+komorebi --help: exit 0
+komorebic --help: exit 0

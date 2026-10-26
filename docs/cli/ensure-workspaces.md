@@ -1,15 +1,21 @@
 # ensure-workspaces
 
 ```
-Compatibility no-op: the native desktop count is managed in Task View
+Create at least this many workspaces for the specified monitor
 
 Usage: komorebic.exe ensure-workspaces <MONITOR> <WORKSPACE_COUNT>
 
 Arguments:
-  <MONITOR>          Monitor index (zero-indexed)
-  <WORKSPACE_COUNT>  Number of desired workspaces
+  <MONITOR>
+          Monitor index (zero-indexed)
+
+  <WORKSPACE_COUNT>
+          Number of desired workspaces
 
 Options:
-  -h, --help  Print help
+  -h, --help
+          Print help
 
 ```
+
+Native mode (`"native_desktop_workspaces": true` in `komorebi.json`; requires restart): This command is a compatibility no-op in native mode; create desktops in Windows Task View.

@@ -54,6 +54,7 @@ use komorebi_client::MonitorNotification;
 use komorebi_client::NotificationEvent;
 use komorebi_client::PathExt;
 use komorebi_client::SocketMessage;
+use komorebi_client::VirtualDesktopNotification;
 use komorebi_themes::Base16Wrapper;
 use komorebi_themes::Catppuccin;
 use komorebi_themes::KomobarThemeBase16;
@@ -884,6 +885,26 @@ impl eframe::App for Komobar {
                     | NotificationEvent::Desktop(DesktopNotification::CountChanged(_)) => {
                         tracing::debug!("desktop changed or count changed - re-rendering bar");
                         should_apply_config = true;
+                    }
+                    NotificationEvent::VirtualDesktop(
+                        VirtualDesktopNotification::EnteredAssociatedVirtualDesktop,
+                    ) => {
+                        tracing::debug!(
+                            "back on komorebi's associated virtual desktop - restoring bar"
+                        );
+                        if let Some(hwnd) = self.hwnd {
+                            komorebi_client::WindowsApi::restore_window(hwnd);
+                        }
+                    }
+                    NotificationEvent::VirtualDesktop(
+                        VirtualDesktopNotification::LeftAssociatedVirtualDesktop,
+                    ) => {
+                        tracing::debug!(
+                            "no longer on komorebi's associated virtual desktop - minimizing bar"
+                        );
+                        if let Some(hwnd) = self.hwnd {
+                            komorebi_client::WindowsApi::minimize_window(hwnd);
+                        }
                     }
                     _ => {}
                 }

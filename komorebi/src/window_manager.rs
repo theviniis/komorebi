@@ -1,3 +1,5 @@
+mod traditional;
+
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -70,6 +72,9 @@ use crate::workspace::WorkspaceLayer;
 
 #[derive(Debug)]
 pub struct WindowManager {
+    pub native_desktop_workspaces: bool,
+    pub virtual_desktop_id: Option<Vec<u8>>,
+    pub uncloack_to_ignore: usize,
     pub window_api: Arc<dyn crate::windows_api::WindowApi>,
     pub monitors: Ring<Monitor>,
     pub monitor_usr_idx_map: HashMap<usize, usize>,
@@ -152,6 +157,9 @@ impl WindowManager {
         let listener = UnixListener::bind(&socket)?;
 
         Ok(Self {
+            native_desktop_workspaces: false,
+            virtual_desktop_id: crate::current_virtual_desktop(),
+            uncloack_to_ignore: 0,
             window_api,
             monitors: Ring::default(),
             monitor_usr_idx_map: HashMap::new(),
@@ -182,6 +190,11 @@ impl WindowManager {
 
     #[tracing::instrument(skip(self))]
     pub fn init(&mut self) -> eyre::Result<()> {
+        if !self.native_desktop_workspaces {
+            WindowsApi::load_monitor_information(self)?;
+            return WindowsApi::load_workspace_information(&mut self.monitors);
+        }
+
         tracing::info!("initialising");
         WindowsApi::load_monitor_information(self)?;
         self.sync_desktop_count()?;
@@ -199,6 +212,16 @@ impl WindowManager {
 
     #[tracing::instrument(skip(self, state))]
     pub fn apply_state(&mut self, state: State) -> eyre::Result<()> {
+        if !self.native_desktop_workspaces && state.native_desktop_workspaces {
+            bail!(
+                "cannot apply native desktop state to traditional workspaces; mode requires restarting komorebi"
+            );
+        }
+
+        if !self.native_desktop_workspaces {
+            return self.traditional_apply_state(state);
+        }
+
         self.sync_desktop_count()?;
         if state.monitors.elements().len() != self.monitors().len() {
             bail!("saved state monitor count differs from connected monitors");
@@ -725,6 +748,15 @@ impl WindowManager {
         monitor_idx: usize,
         desktop_idx: usize,
     ) -> eyre::Result<()> {
+        if !self.native_desktop_workspaces {
+            return self
+                .monitors()
+                .get(monitor_idx)
+                .and_then(|m| m.workspaces().get(desktop_idx))
+                .map(|_| ())
+                .ok_or_eyre("workspace destination does not exist");
+        }
+
         if desktop_idx >= self.desktop_count {
             bail!(
                 "workspace rule desktop {desktop_idx} is out of range (desktop_count: {})",
@@ -849,6 +881,10 @@ impl WindowManager {
 
     #[tracing::instrument(skip(self), level = "debug")]
     pub fn enforce_workspace_rules(&mut self) -> eyre::Result<()> {
+        if !self.native_desktop_workspaces {
+            return self.traditional_enforce_workspace_rules();
+        }
+
         if WORKSPACE_MATCHING_RULES.lock().is_empty() {
             return Ok(());
         }
@@ -986,11 +1022,13 @@ impl WindowManager {
         let (origin_monitor_idx, origin_workspace_idx, w_hwnd) = origin;
         let (target_monitor_idx, target_workspace_idx, target_container_idx) = target;
 
-        if origin_workspace_idx != target_workspace_idx {
-            bail!("cross-desktop transfers must use native desktop movement");
+        if self.native_desktop_workspaces {
+            if origin_workspace_idx != target_workspace_idx {
+                bail!("cross-desktop transfers must use native desktop movement");
+            }
+            self.validate_window_destination(origin_monitor_idx, origin_workspace_idx)?;
+            self.validate_window_destination(target_monitor_idx, target_workspace_idx)?;
         }
-        self.validate_window_destination(origin_monitor_idx, origin_workspace_idx)?;
-        self.validate_window_destination(target_monitor_idx, target_workspace_idx)?;
 
         let origin_workspace = self
             .monitors_mut()
@@ -1054,6 +1092,7 @@ impl WindowManager {
                     .workspaces_mut()
                     .get_mut(origin_workspace_idx)
                     .ok_or_eyre("there is no workspace for this monitor")?;
+                let uncloaked = origin_workspace.containers().len();
                 for container in origin_workspace.containers_mut() {
                     container.restore();
                 }
@@ -1067,6 +1106,9 @@ impl WindowManager {
                         target_container_idx,
                     ),
                 )?;
+                if !self.native_desktop_workspaces {
+                    self.uncloack_to_ignore = uncloaked;
+                }
             }
         } else if origin_workspace
             .maximized_window
@@ -1110,11 +1152,13 @@ impl WindowManager {
         let (origin_monitor_idx, origin_workspace_idx, origin_container_idx) = origin;
         let (target_monitor_idx, target_workspace_idx, target_container_idx) = target;
 
-        if origin_workspace_idx != target_workspace_idx {
-            bail!("cross-desktop transfers must use native desktop movement");
+        if self.native_desktop_workspaces {
+            if origin_workspace_idx != target_workspace_idx {
+                bail!("cross-desktop transfers must use native desktop movement");
+            }
+            self.validate_window_destination(origin_monitor_idx, origin_workspace_idx)?;
+            self.validate_window_destination(target_monitor_idx, target_workspace_idx)?;
         }
-        self.validate_window_destination(origin_monitor_idx, origin_workspace_idx)?;
-        self.validate_window_destination(target_monitor_idx, target_workspace_idx)?;
 
         let origin_container = self
             .monitors_mut()
@@ -1152,11 +1196,13 @@ impl WindowManager {
         let (origin_monitor_idx, origin_workspace_idx, origin_container_idx) = origin;
         let (target_monitor_idx, target_workspace_idx, target_container_idx) = target;
 
-        if origin_workspace_idx != target_workspace_idx {
-            bail!("cross-desktop transfers must use native desktop movement");
+        if self.native_desktop_workspaces {
+            if origin_workspace_idx != target_workspace_idx {
+                bail!("cross-desktop transfers must use native desktop movement");
+            }
+            self.validate_window_destination(origin_monitor_idx, origin_workspace_idx)?;
+            self.validate_window_destination(target_monitor_idx, target_workspace_idx)?;
         }
-        self.validate_window_destination(origin_monitor_idx, origin_workspace_idx)?;
-        self.validate_window_destination(target_monitor_idx, target_workspace_idx)?;
 
         let origin_container_is_valid = self
             .monitors_mut()
@@ -1523,9 +1569,13 @@ impl WindowManager {
         let known_transparent_hwnds = transparency_manager::known_hwnds();
         let border_implementation = border_manager::IMPLEMENTATION.load();
 
+        let native_mode = self.native_desktop_workspaces;
         for monitor in self.monitors_mut() {
             let focused_idx = monitor.focused_workspace_idx();
-            if let Some(workspace) = monitor.workspaces_mut().get_mut(focused_idx) {
+            for (idx, workspace) in monitor.workspaces_mut().iter_mut().enumerate() {
+                if native_mode && idx != focused_idx {
+                    continue;
+                }
                 if let Some(monocle) = &workspace.monocle_container {
                     for window in monocle.windows() {
                         if matches!(border_implementation, BorderImplementation::Windows) {
@@ -1703,6 +1753,10 @@ impl WindowManager {
         first_idx: usize,
         second_idx: usize,
     ) -> eyre::Result<()> {
+        if !self.native_desktop_workspaces {
+            return self.traditional_swap_monitor_workspaces(first_idx, second_idx);
+        }
+
         let _ = (first_idx, second_idx);
         bail!("swapping workspaces between monitors is not supported with native desktops")
     }
@@ -1727,6 +1781,15 @@ impl WindowManager {
         follow: bool,
         move_direction: Option<OperationDirection>,
     ) -> eyre::Result<()> {
+        if !self.native_desktop_workspaces {
+            return self.traditional_move_container_to_monitor(
+                monitor_idx,
+                workspace_idx,
+                follow,
+                move_direction,
+            );
+        }
+
         self.sync_desktop_count()?;
         self.move_container_to_location(
             monitor_idx,
@@ -1743,6 +1806,10 @@ impl WindowManager {
         follow: bool,
         direction: Option<OperationDirection>,
     ) -> eyre::Result<()> {
+        if !self.native_desktop_workspaces {
+            return self.traditional_move_container_to_workspace(idx, follow, direction);
+        }
+
         self.move_container_to_location(self.focused_monitor_idx(), idx, follow, direction)
     }
 
@@ -1946,6 +2013,10 @@ impl WindowManager {
     /// Reconcile a native window movement without moving the window back or changing focus.
     /// Failed native queries leave the existing association intact and return an explicit error.
     pub(crate) fn reconcile_window_desktop(&mut self, hwnd: isize) -> eyre::Result<()> {
+        if !self.native_desktop_workspaces {
+            return Ok(());
+        }
+
         let locations = self
             .monitors()
             .iter()
@@ -2029,12 +2100,20 @@ impl WindowManager {
     }
 
     pub fn remove_focused_workspace(&mut self) -> Option<Workspace> {
+        if !self.native_desktop_workspaces {
+            return self.traditional_remove_focused_workspace();
+        }
+
         tracing::warn!("remove_focused_workspace is a no-op: remove desktops in Task View");
         None
     }
 
     #[tracing::instrument(skip(self))]
     pub fn move_workspace_to_monitor(&mut self, _idx: usize) -> eyre::Result<()> {
+        if !self.native_desktop_workspaces {
+            return self.traditional_move_workspace_to_monitor(_idx);
+        }
+
         bail!("moving workspaces between monitors is not supported with native desktops")
     }
 
@@ -3811,6 +3890,10 @@ impl WindowManager {
         _monitor_idx: usize,
         _workspace_count: usize,
     ) -> eyre::Result<()> {
+        if !self.native_desktop_workspaces {
+            return self.traditional_ensure_workspaces_for_monitor(_monitor_idx, _workspace_count);
+        }
+
         tracing::warn!(
             "ensure_workspaces_for_monitor is a no-op: desktops are managed by Task View"
         );
@@ -3823,6 +3906,10 @@ impl WindowManager {
         _monitor_idx: usize,
         _names: &Vec<String>,
     ) -> eyre::Result<()> {
+        if !self.native_desktop_workspaces {
+            return self.traditional_ensure_named_workspaces_for_monitor(_monitor_idx, _names);
+        }
+
         tracing::warn!(
             "ensure_named_workspaces_for_monitor is a no-op: desktops are managed by Task View"
         );
@@ -3860,6 +3947,10 @@ impl WindowManager {
         workspace_idx: usize,
         name: String,
     ) -> eyre::Result<()> {
+        if !self.native_desktop_workspaces {
+            return self.traditional_set_workspace_name(monitor_idx, workspace_idx, name);
+        }
+
         let _ = monitor_idx; // Compatibility argument: the native name is global.
         self.sync_desktop_count()?;
         let id = *self
@@ -3968,11 +4059,19 @@ impl WindowManager {
     }
 
     pub fn focused_workspace_idx(&self) -> eyre::Result<usize> {
+        if !self.native_desktop_workspaces {
+            return self.traditional_focused_workspace_idx();
+        }
+
         // Route through the global index; no per-monitor Ring is consulted.
         Ok(self.focused_desktop_idx)
     }
 
     pub fn focused_workspace(&self) -> eyre::Result<&Workspace> {
+        if !self.native_desktop_workspaces {
+            return self.traditional_focused_workspace();
+        }
+
         let idx = self.focused_desktop_idx;
         self.focused_monitor()
             .ok_or_eyre("there is no monitor")?
@@ -3982,6 +4081,10 @@ impl WindowManager {
     }
 
     pub fn focused_workspace_mut(&mut self) -> eyre::Result<&mut Workspace> {
+        if !self.native_desktop_workspaces {
+            return self.traditional_focused_workspace_mut();
+        }
+
         let idx = self.focused_desktop_idx;
         self.focused_monitor_mut()
             .ok_or_eyre("there is no monitor")?
@@ -3991,6 +4094,10 @@ impl WindowManager {
     }
 
     pub fn focused_workspace_idx_for_monitor_idx(&self, idx: usize) -> eyre::Result<usize> {
+        if !self.native_desktop_workspaces {
+            return self.traditional_focused_workspace_idx_for_monitor_idx(idx);
+        }
+
         // All monitors share the same focused index (the global one).
         // Validate that the monitor exists but ignore its per-Ring index.
         self.monitors()
@@ -4006,6 +4113,10 @@ impl WindowManager {
     /// desktop being left and uncloaks windows on the desktop being entered. These
     /// cloak events should not trigger komorebi's reconciliation logic.
     pub fn is_desktop_transition_cloak(&self, window: Window) -> bool {
+        if !self.native_desktop_workspaces {
+            return false;
+        }
+
         // First check our tracked state, then fall back to backend
         let window_desktop = self.window_desktops.get(&window.hwnd).copied().or_else(|| {
             crate::virtual_desktop::backend()
@@ -4020,6 +4131,10 @@ impl WindowManager {
     /// than the currently focused one. This is used to prevent reaping or reconciling
     /// windows that are on other desktops.
     pub fn is_window_on_other_desktop(&self, hwnd: isize) -> bool {
+        if !self.native_desktop_workspaces {
+            return false;
+        }
+
         let tracked = self.window_desktops.get(&hwnd).copied();
         if tracked.is_some_and(|idx| idx != self.focused_desktop_idx) {
             return true;
@@ -4064,6 +4179,10 @@ impl WindowManager {
     ///   **Every monitor has `workspaces().len() == desktop_count`, and
     ///   every monitor's `focused_workspace_idx()` equals `focused_desktop_idx`.**
     pub fn sync_desktop_count(&mut self) -> eyre::Result<()> {
+        if !self.native_desktop_workspaces {
+            return Ok(());
+        }
+
         let backend = virtual_desktop::backend();
         let snapshot = backend.snapshot()?;
         let ids = snapshot.desktops.iter().map(|d| d.id).collect::<Vec<_>>();
@@ -4296,6 +4415,10 @@ impl WindowManager {
     #[tracing::instrument(skip(self))]
     /// Match Windows navigation: reaching either end leaves the current desktop selected.
     pub fn focus_adjacent_desktop(&mut self, direction: CycleDirection) -> eyre::Result<()> {
+        if !self.native_desktop_workspaces {
+            bail!("native desktop navigation is disabled");
+        }
+
         self.sync_desktop_count()?;
         let target = match direction {
             CycleDirection::Previous => self.focused_desktop_idx.checked_sub(1),
@@ -4311,6 +4434,10 @@ impl WindowManager {
     }
 
     pub fn focus_desktop(&mut self, idx: usize) -> eyre::Result<()> {
+        if !self.native_desktop_workspaces {
+            return self.focus_workspace(idx);
+        }
+
         self.sync_desktop_count()?;
         let id = *self
             .desktop_ids
@@ -4330,6 +4457,10 @@ impl WindowManager {
     /// all monitors share a single global desktop index.
     #[tracing::instrument(skip(self))]
     pub fn focus_workspace(&mut self, idx: usize) -> eyre::Result<()> {
+        if !self.native_desktop_workspaces {
+            return self.traditional_focus_workspace(idx);
+        }
+
         self.focus_desktop(idx)
     }
 
@@ -4343,6 +4474,10 @@ impl WindowManager {
     /// WindowDesktopChanged events explicitly reconcile existing associations.
     #[tracing::instrument(skip(self))]
     pub fn desktop_idx_for_new_window(&mut self, window: Window) -> eyre::Result<usize> {
+        if !self.native_desktop_workspaces {
+            return self.focused_workspace_idx();
+        }
+
         let hwnd = window.hwnd;
 
         // If we've seen this window before, use our tracked desktop
@@ -4378,6 +4513,10 @@ impl WindowManager {
 
     #[tracing::instrument(skip(self))]
     pub fn monitor_workspace_index_by_name(&mut self, name: &str) -> Option<(usize, usize)> {
+        if !self.native_desktop_workspaces {
+            return self.traditional_monitor_workspace_index_by_name(name);
+        }
+
         (0..self.desktop_count)
             .find(|i| self.workspace_names.get(i).is_some_and(|n| n == name))
             .map(|d| (self.focused_monitor_idx(), d))
@@ -4385,6 +4524,10 @@ impl WindowManager {
 
     #[tracing::instrument(skip(self))]
     pub fn new_workspace(&mut self) -> eyre::Result<()> {
+        if !self.native_desktop_workspaces {
+            return self.traditional_new_workspace();
+        }
+
         tracing::warn!("new_workspace is a no-op: desktops are managed by Task View");
         Ok(())
     }
@@ -4495,6 +4638,155 @@ mod tests {
     use std::path::PathBuf;
     use uuid::Uuid;
 
+    mod optional_mode_tests {
+        use super::*;
+        use crate::core::SocketMessage;
+        use crate::virtual_desktop::{DesktopBackend, DesktopId, DesktopSnapshot};
+
+        struct ForbiddenDesktopBackend;
+        #[allow(unused_variables)]
+        impl DesktopBackend for ForbiddenDesktopBackend {
+            fn snapshot(&self) -> eyre::Result<DesktopSnapshot> {
+                panic!("traditional mode called the native backend")
+            }
+            fn current_desktop_id(&self) -> eyre::Result<DesktopId> {
+                panic!("traditional mode called the native backend")
+            }
+            fn desktop_id_for_window(&self, hwnd: isize) -> eyre::Result<DesktopId> {
+                panic!("traditional mode called the native backend")
+            }
+            fn desktop_count(&self) -> eyre::Result<usize> {
+                panic!("traditional mode called the native backend")
+            }
+            fn current_desktop_idx(&self) -> eyre::Result<usize> {
+                panic!("traditional mode called the native backend")
+            }
+            fn switch_desktop(&self, idx: usize) -> eyre::Result<()> {
+                panic!("traditional mode called the native backend")
+            }
+            fn desktop_idx_for_window(&self, hwnd: isize) -> eyre::Result<usize> {
+                panic!("traditional mode called the native backend")
+            }
+            fn move_window_to_desktop(&self, hwnd: isize, idx: usize) -> eyre::Result<()> {
+                panic!("traditional mode called the native backend")
+            }
+            fn desktop_name(&self, idx: usize) -> eyre::Result<Option<String>> {
+                panic!("traditional mode called the native backend")
+            }
+            fn set_desktop_name(&self, idx: usize, name: &str) -> eyre::Result<()> {
+                panic!("traditional mode called the native backend")
+            }
+        }
+
+        fn traditional() -> (WindowManager, TestContext) {
+            let (mut wm, ctx) = setup_window_manager();
+            wm.native_desktop_workspaces = false;
+            wm.virtual_desktop_id = None;
+            virtual_desktop::set_backend(Some(Arc::new(ForbiddenDesktopBackend)));
+            for i in 0..2 {
+                wm.monitors_mut().push_back(monitor::new(
+                    i,
+                    Rect::default(),
+                    Rect::default(),
+                    format!("Display{i}"),
+                    format!("Device{i}"),
+                    format!("Id{i}"),
+                    None,
+                ));
+            }
+            (wm, ctx)
+        }
+
+        #[test]
+        fn traditional_commands_keep_independent_counts_names_and_focus_without_native_calls() {
+            let (mut wm, _ctx) = traditional();
+            wm.process_command(SocketMessage::EnsureWorkspaces(0, 2), Vec::new())
+                .unwrap();
+            wm.process_command(
+                SocketMessage::EnsureNamedWorkspaces(1, vec!["a".into(), "b".into(), "c".into()]),
+                Vec::new(),
+            )
+            .unwrap();
+            wm.process_command(
+                SocketMessage::WorkspaceName(0, 1, "local".into()),
+                Vec::new(),
+            )
+            .unwrap();
+            wm.monitors_mut()[0].focus_workspace(1).unwrap();
+            wm.monitors_mut()[1].focus_workspace(2).unwrap();
+            assert_eq!(wm.focused_workspace_idx_for_monitor_idx(0).unwrap(), 1);
+            assert_eq!(wm.focused_workspace_idx_for_monitor_idx(1).unwrap(), 2);
+            assert_eq!(wm.monitors()[0].workspaces().len(), 2);
+            assert_eq!(wm.monitors()[1].workspaces().len(), 3);
+            assert_eq!(
+                wm.monitors()[0].workspaces()[1].name.as_deref(),
+                Some("local")
+            );
+            assert_eq!(wm.monitor_workspace_index_by_name("c"), Some((1, 2)));
+            wm.sync_desktop_count().unwrap();
+            wm.enforce_workspace_rules().unwrap();
+            assert!(!wm.is_window_on_other_desktop(42));
+            assert!(!wm.is_desktop_transition_cloak(Window::from(42)));
+            wm.process_event(WindowManagerEvent::DesktopCountChanged)
+                .unwrap();
+            wm.process_event(WindowManagerEvent::Manage(Window::from(42)))
+                .unwrap();
+            assert!(!State::from(&wm).native_desktop_workspaces);
+            assert!(!StaticConfig::from(&wm).native_desktop_workspaces);
+            assert!(wm.monitors_mut()[1].remove_workspace_by_idx(2).is_some());
+            assert_eq!(wm.monitors()[0].workspaces().len(), 2);
+        }
+
+        #[test]
+        fn traditional_cross_monitor_transfer_accepts_different_workspace_indices() {
+            let (mut wm, _ctx) = traditional();
+            wm.ensure_workspaces_for_monitor(1, 3).unwrap();
+            let mut container = Container::default();
+            container.windows_mut().push_back(Window::from(42));
+            wm.monitors_mut()[0].workspaces_mut()[0].add_container_to_back(container);
+            wm.transfer_container((0, 0, 0), (1, 2, 0)).unwrap();
+            wm.update_known_hwnds();
+            assert_eq!(wm.known_hwnds.get(&42), Some(&(1, 2)));
+            assert!(wm.monitors()[0].workspaces()[0].is_empty());
+        }
+
+        #[test]
+        fn traditional_state_and_config_reload_cannot_enable_native_mode() {
+            let (mut wm, _ctx) = traditional();
+            let mut state = State::from(&wm);
+            state.native_desktop_workspaces = true;
+            assert!(
+                wm.apply_state(state)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("restart")
+            );
+            assert!(!wm.native_desktop_workspaces);
+            let mut config = StaticConfig::from(&wm);
+            config.native_desktop_workspaces = true;
+            config.warn_if_mode_changed(&wm);
+            assert!(!wm.native_desktop_workspaces);
+            #[allow(deprecated)]
+            {
+                config.focus_follows_mouse = Some(FocusFollowsMouseImplementation::Komorebi);
+            }
+            config.resize_delta = Some(77);
+            let path = DATA_DIR.join(format!("optional-mode-reload-{}.json", Uuid::new_v4()));
+            std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+            let reload = StaticConfig::reload(&path, &mut wm);
+            std::fs::remove_file(&path).unwrap();
+            reload.unwrap();
+            assert!(!wm.native_desktop_workspaces);
+            assert_eq!(wm.resize_delta, 77);
+            let mut json = serde_json::to_value(State::from(&wm)).unwrap();
+            json.as_object_mut()
+                .unwrap()
+                .remove("native_desktop_workspaces");
+            let old_state: State = serde_json::from_value(json).unwrap();
+            assert!(!old_state.native_desktop_workspaces);
+        }
+    }
+
     struct TestContext {
         socket_path: Option<PathBuf>,
         _backend_guard: Option<virtual_desktop::testing::InstalledBackendGuard>,
@@ -4543,8 +4835,10 @@ mod tests {
         // Window Manager should be created successfully
         assert!(wm.is_ok());
 
+        let mut wm = wm.unwrap();
+        wm.native_desktop_workspaces = true;
         (
-            wm.unwrap(),
+            wm,
             TestContext {
                 socket_path: Some(socket_path),
                 _backend_guard: Some(backend_guard),

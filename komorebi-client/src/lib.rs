@@ -62,6 +62,7 @@ pub use komorebi::BorderColours;
 pub use komorebi::Colour;
 pub use komorebi::CrossBoundaryBehaviour;
 pub use komorebi::DesktopNotification;
+pub use komorebi::VirtualDesktopNotification;
 pub use komorebi::GridLayoutOptions;
 pub use komorebi::KomorebiTheme;
 pub use komorebi::LayoutOptions;

@@ -41,14 +41,13 @@ use komorebi::HOME_DIR;
 use komorebi::INITIAL_CONFIGURATION_LOADED;
 use komorebi::SESSION_ID;
 use komorebi::border_manager;
+use komorebi::desktop_listener::listen_for_desktop_events;
 use komorebi::focus_manager;
 use komorebi::load_configuration;
 use komorebi::monitor_reconciliator;
 use komorebi::process_command::listen_for_commands;
 use komorebi::process_command::listen_for_commands_tcp;
 use komorebi::process_event::listen_for_events;
-use komorebi::desktop_listener::listen_for_desktop_events;
-use komorebi::winevent_listener::event_tx;
 use komorebi::process_movement::listen_for_movements;
 use komorebi::reaper;
 use komorebi::stackbar_manager;
@@ -56,10 +55,10 @@ use komorebi::state::State;
 use komorebi::static_config::StaticConfig;
 use komorebi::theme_manager;
 use komorebi::transparency_manager;
-use komorebi::version_gate::require_supported_windows;
 use komorebi::window_manager::WindowManager;
 use komorebi::windows_api::WindowsApi;
 use komorebi::winevent_listener;
+use komorebi::winevent_listener::event_tx;
 
 fn setup(log_level: LogLevel) -> eyre::Result<(WorkerGuard, WorkerGuard)> {
     if std::env::var("RUST_LIB_BACKTRACE").is_err() {
@@ -200,8 +199,6 @@ struct Opts {
 #[tracing::instrument]
 #[allow(clippy::cognitive_complexity)]
 fn main() -> eyre::Result<()> {
-    require_supported_windows()?;
-
     let opts: Opts = Opts::parse();
     CUSTOM_FFM.store(opts.focus_follows_mouse, Ordering::SeqCst);
 
@@ -321,7 +318,11 @@ fn main() -> eyre::Result<()> {
     if !opts.clean_state && dumped_state.is_file() {
         if let Ok(state) = serde_json::from_str(&std::fs::read_to_string(&dumped_state)?) {
             if let Err(error) = wm.lock().apply_state(state) {
-                tracing::warn!("cannot apply state from {}: {}", dumped_state.display(), error);
+                tracing::warn!(
+                    "cannot apply state from {}: {}",
+                    dumped_state.display(),
+                    error
+                );
             }
         } else {
             tracing::warn!(
@@ -347,7 +348,9 @@ fn main() -> eyre::Result<()> {
         listen_for_commands_tcp(wm.clone(), port);
     }
 
-    listen_for_desktop_events(event_tx())?;
+    if wm.lock().native_desktop_workspaces {
+        listen_for_desktop_events(event_tx())?;
+    }
 
     listen_for_events(wm.clone());
 

@@ -1567,6 +1567,7 @@ pub trait WindowApi: Send + Sync + std::fmt::Debug {
         window: crate::window::Window,
         event: crate::window_manager_event::WindowManagerEvent,
         debug: &mut crate::window::RuleDebug,
+        native_desktop_workspaces: bool,
     ) -> eyre::Result<bool>;
 }
 
@@ -1640,8 +1641,9 @@ impl WindowApi for RealWindowsApi {
         window: crate::window::Window,
         event: crate::window_manager_event::WindowManagerEvent,
         debug: &mut crate::window::RuleDebug,
+        native_desktop_workspaces: bool,
     ) -> eyre::Result<bool> {
-        window.should_manage(Some(event), debug)
+        window.should_manage_with_native_desktops(Some(event), debug, native_desktop_workspaces)
     }
 }
 
@@ -1734,6 +1736,7 @@ impl WindowApi for FakeWindowApi {
         _window: crate::window::Window,
         _event: crate::window_manager_event::WindowManagerEvent,
         _debug: &mut crate::window::RuleDebug,
+        _native_desktop_workspaces: bool,
     ) -> eyre::Result<bool> {
         Ok(self.manage_windows)
     }

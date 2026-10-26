@@ -54,6 +54,8 @@ use std::sync::atomic::Ordering;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct State {
+    #[serde(default)]
+    pub native_desktop_workspaces: bool,
     pub monitors: Ring<Monitor>,
     pub monitor_usr_idx_map: HashMap<usize, usize>,
     pub is_paused: bool,
@@ -81,7 +83,8 @@ impl State {
     pub fn has_been_modified(&self, wm: &WindowManager) -> bool {
         let new = Self::from(wm);
 
-        if self.focused_desktop_idx != new.focused_desktop_idx
+        if self.native_desktop_workspaces != new.native_desktop_workspaces
+            || self.focused_desktop_idx != new.focused_desktop_idx
             || self.desktop_count != new.desktop_count
         {
             return true;
@@ -243,6 +246,7 @@ impl From<&WindowManager> for State {
             .monitors()
             .iter()
             .map(|monitor| Monitor {
+                native_desktop_workspaces: monitor.native_desktop_workspaces,
                 id: monitor.id,
                 name: monitor.name.clone(),
                 device: monitor.device.clone(),
@@ -328,6 +332,7 @@ impl From<&WindowManager> for State {
             unmanaged_window_operation_behaviour: wm.unmanaged_window_operation_behaviour,
             focused_desktop_idx: wm.focused_desktop_idx,
             desktop_count: wm.desktop_count,
+            native_desktop_workspaces: wm.native_desktop_workspaces,
         }
     }
 }

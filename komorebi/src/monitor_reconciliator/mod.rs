@@ -1,5 +1,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
+mod traditional;
+
 use crate::DISPLAY_INDEX_PREFERENCES;
 use crate::DUPLICATE_MONITOR_SERIAL_IDS;
 use crate::Notification;
@@ -263,6 +265,10 @@ where
     F: Fn() -> I + Copy,
     I: Iterator<Item = Result<win32_display_data::Device, win32_display_data::Error>>,
 {
+    if !wm.lock().native_desktop_workspaces {
+        return traditional::handle_traditional_notifications(wm, display_provider, receiver);
+    }
+
     tracing::info!("listening");
 
     'receiver: for notification in receiver {
@@ -685,13 +691,14 @@ mod tests {
         let socket_path = PathBuf::from(socket_name);
 
         // Create a new WindowManager instance
-        let wm = match WindowManager::new(receiver, Some(socket_path.clone())) {
+        let mut wm = match WindowManager::new(receiver, Some(socket_path.clone())) {
             Ok(manager) => manager,
             Err(e) => {
                 panic!("Failed to create WindowManager: {e}");
             }
         };
 
+        wm.native_desktop_workspaces = true;
         (
             wm,
             TestContext {

@@ -37,3 +37,7 @@ A inclusão de janelas em stacks também foi separada entre bookkeeping e efeito
 `stage3-validation.log` registra comandos e resultados dessa etapa. As duas últimas suítes seriais completas passaram com 169 testes aprovados, zero falhas e um ignorado histórico. O check do workspace também passou após as últimas alterações.
 
 O acompanhamento principal descreve as 48 combinações de reordenação/foco, criação/remoção, consulta com falha e retry, nomes, notificações, monitor em cache, proteção do reaper e reordenação durante movimento de stack. Os cenários usam backend e efeitos Win32 falsos. Não houve validação visual ou manipulação de desktops reais para aprovar esta etapa; esses critérios permanecem na etapa 5.
+
+## Integração opcional (2026-10-26)
+
+Arquivos `optional-native-*.log`: testes finais em execução serial, release, schemas e MSI extraído/validado. Ver o [plano de integração opcional](../2026-10-26-optional-native-desktop-workspaces.md) para os critérios ainda dependentes de validação manual.

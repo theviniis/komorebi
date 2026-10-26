@@ -1215,36 +1215,36 @@ enum SubCommand {
     /// Focus the specified workspace on the focused monitor
     #[clap(arg_required_else_help = true)]
     FocusWorkspace(FocusWorkspace),
-    /// Focus the specified native desktop globally (alias of focus-workspace)
+    /// Focus the specified workspace on all monitors (global desktop in native mode)
     #[clap(arg_required_else_help = true)]
     FocusWorkspaces(FocusWorkspaces),
-    /// Focus the target monitor and switch the native desktop globally
+    /// Focus the specified monitor and workspace (global desktop in native mode)
     #[clap(arg_required_else_help = true)]
     FocusMonitorWorkspace(FocusMonitorWorkspace),
     /// Focus the specified workspace
     #[clap(arg_required_else_help = true)]
     FocusNamedWorkspace(FocusNamedWorkspace),
-    /// Compatibility no-op: remove native desktops in Windows Task View
+    /// Close an empty unnamed workspace (native mode: remove desktops in Task View)
     CloseWorkspace,
     /// Focus the monitor in the given cycle direction
     #[clap(arg_required_else_help = true)]
     CycleMonitor(CycleMonitor),
-    /// Focus the adjacent native desktop; stop at the first or last desktop
+    /// Cycle workspaces (native mode: stop at the first or last desktop)
     #[clap(arg_required_else_help = true)]
     CycleWorkspace(CycleWorkspace),
     /// Focus the next empty workspace in the given cycle direction (if one exists)
     #[clap(arg_required_else_help = true)]
     CycleEmptyWorkspace(CycleWorkspace),
-    /// Unsupported with native desktops; returns an explanatory error
+    /// Move workspaces between monitors (unsupported in native mode)
     #[clap(arg_required_else_help = true)]
     MoveWorkspaceToMonitor(MoveWorkspaceToMonitor),
-    /// Unsupported with native desktops; returns an explanatory error
+    /// Move workspaces between monitors (unsupported in native mode)
     #[clap(arg_required_else_help = true)]
     CycleMoveWorkspaceToMonitor(CycleMoveWorkspaceToMonitor),
-    /// Unsupported with native desktops; returns an explanatory error
-    #[clap(arg_required_else_help = true, hide = true)]
+    /// Swap monitor workspaces (unsupported in native mode)
+    #[clap(arg_required_else_help = true)]
     SwapWorkspacesWithMonitor(SwapWorkspacesWithMonitor),
-    /// Compatibility no-op: create native desktops in Windows Task View
+    /// Create a workspace (native mode: create desktops in Task View)
     NewWorkspace,
     /// Set the resize delta (used by resize-edge and resize-axis)
     #[clap(arg_required_else_help = true)]
@@ -1309,10 +1309,10 @@ enum SubCommand {
     /// Set the display index preference for a monitor identified using its display name
     #[clap(arg_required_else_help = true)]
     DisplayIndexPreference(DisplayIndexPreference),
-    /// Compatibility no-op: the native desktop count is managed in Task View
+    /// Ensure workspace count (native mode: create desktops in Windows Task View)
     #[clap(arg_required_else_help = true)]
     EnsureWorkspaces(EnsureWorkspaces),
-    /// Compatibility no-op: create and name native desktops in Task View
+    /// Ensure named workspaces (native mode: use Windows Task View)
     #[clap(arg_required_else_help = true)]
     EnsureNamedWorkspaces(EnsureNamedWorkspaces),
     /// Set the container padding for the specified workspace

@@ -1,6 +1,22 @@
 # Native Windows desktops
 
-This branch requires Windows 11 24H2 build **26100.2605** or newer. Startup checks the detected Windows build before COM initialization and reports both detected and minimum builds when unsupported. The native backend uses the pinned winvd 0.0.49 dependency and internal Windows desktop interfaces.
+Native mode requires Windows 11 24H2 build **26100.2605** or newer. Startup checks the detected Windows build before COM initialization and reports both detected and minimum builds when unsupported. The native backend uses the pinned winvd 0.0.49 dependency and internal Windows desktop interfaces.
+
+## Enable native mode
+
+Native integration is disabled by default. Add this top-level option to `komorebi.json` and restart komorebi:
+
+```json
+{
+  "native_desktop_workspaces": true
+}
+```
+
+Omitting the option or setting it to `false` selects traditional workspaces: each monitor has independent workspace counts, names and focus, and creation/removal commands retain their original behavior. Traditional mode does not initialize the native desktop backend or apply its Windows build requirement. The descriptions below apply when native mode is enabled.
+
+Reloading or replacing configuration keeps the running mode and logs a warning if the option changes; other settings still apply. Restart komorebi to change modes. The published state includes `native_desktop_workspaces` (missing means traditional for older consumers). Applying saved state never changes the active mode. Native saved state is rejected in traditional mode; native mode reconciles legacy state with actual Windows desktop membership.
+
+Personal configuration and shortcut bindings are not changed automatically by the installer.
 
 ## Desktop ownership
 
