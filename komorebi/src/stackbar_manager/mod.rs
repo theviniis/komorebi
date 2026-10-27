@@ -3,6 +3,8 @@ mod stackbar;
 use crate::DEFAULT_CONTAINER_PADDING;
 use crate::WindowManager;
 use crate::WindowsApi;
+use crate::animation::ANIMATION_MANAGER;
+use crate::animation::prefix::AnimationPrefix;
 use crate::container::Container;
 use crate::core::StackbarLabel;
 use crate::core::StackbarMode;
@@ -17,10 +19,8 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicU32;
-use std::sync::atomic::Ordering;
 
 pub static STACKBAR_FONT_SIZE: AtomicI32 = AtomicI32::new(0); // 0 will produce the system default
 pub static STACKBAR_FOCUSED_TEXT_COLOUR: AtomicU32 = AtomicU32::new(16777215); // white
@@ -30,8 +30,6 @@ pub static STACKBAR_TAB_HEIGHT: AtomicI32 = AtomicI32::new(40);
 pub static STACKBAR_TAB_WIDTH: AtomicI32 = AtomicI32::new(200);
 pub static STACKBAR_LABEL: AtomicCell<StackbarLabel> = AtomicCell::new(StackbarLabel::Title);
 pub static STACKBAR_MODE: AtomicCell<StackbarMode> = AtomicCell::new(StackbarMode::Never);
-
-pub static STACKBAR_TEMPORARILY_DISABLED: AtomicBool = AtomicBool::new(false);
 
 lazy_static! {
     pub static ref STACKBAR_STATE: Mutex<HashMap<String, Stackbar>> = Mutex::new(HashMap::new());
@@ -99,7 +97,10 @@ pub fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result
 
         // If stackbars are disabled
         if matches!(STACKBAR_MODE.load(), StackbarMode::Never)
-            || STACKBAR_TEMPORARILY_DISABLED.load(Ordering::SeqCst)
+            || ANIMATION_MANAGER
+                .lock()
+                .count_in_progress(AnimationPrefix::Movement)
+                > 0
         {
             for stackbar in stackbars.values() {
                 stackbar.destroy()?;
@@ -109,7 +110,13 @@ pub fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result
             continue 'receiver;
         }
 
-        for (monitor_idx, m) in state.monitors_mut().iter_mut().enumerate() {
+        let maximized_monitor = WindowsApi::foreground_window()
+            .ok()
+            .filter(|hwnd| WindowsApi::is_zoomed(*hwnd))
+            .map(WindowsApi::monitor_from_window);
+
+        'monitors: for (monitor_idx, m) in state.monitors_mut().iter_mut().enumerate() {
+            let is_maximized = maximized_monitor == Some(m.id);
             // Only operate on the focused workspace of each monitor
             if let Some(ws) = m.focused_workspace_mut() {
                 // Workspaces with tiling disabled don't have stackbars
@@ -126,11 +133,8 @@ pub fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result
                         stackbars.remove(id);
                     }
 
-                    continue 'receiver;
+                    continue 'monitors;
                 }
-
-                let is_maximized =
-                    WindowsApi::is_zoomed(WindowsApi::foreground_window().unwrap_or_default());
 
                 // Handle the monocle container separately
                 if ws.monocle_container.is_some() || is_maximized {
@@ -147,7 +151,7 @@ pub fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result
                         stackbars.remove(id);
                     }
 
-                    continue 'receiver;
+                    continue 'monitors;
                 }
 
                 // Destroy any stackbars not associated with the focused workspace
@@ -195,13 +199,13 @@ pub fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result
                     // Get the stackbar entry for this container from the map or create one
                     let stackbar = match stackbars.entry(container.id.clone()) {
                         Entry::Occupied(entry) => entry.into_mut(),
-                        Entry::Vacant(entry) => {
-                            if let Ok(stackbar) = Stackbar::create(&container.id) {
-                                entry.insert(stackbar)
-                            } else {
-                                continue 'receiver;
+                        Entry::Vacant(entry) => match Stackbar::create(&container.id) {
+                            Ok(stackbar) => entry.insert(stackbar),
+                            Err(error) => {
+                                tracing::warn!(container_id = %container.id, monitor_idx, "could not create stackbar: {error}");
+                                continue 'containers;
                             }
-                        }
+                        },
                     };
 
                     stackbars_monitors.insert(container.id.clone(), monitor_idx);
