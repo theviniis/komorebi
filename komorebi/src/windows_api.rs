@@ -1580,7 +1580,17 @@ impl WindowApi for RealWindowsApi {
     fn enum_window_handles(&self) -> eyre::Result<Vec<isize>> {
         unsafe extern "system" fn collect(hwnd: HWND, data: LPARAM) -> windows_core::BOOL {
             let windows = unsafe { &mut *(data.0 as *mut Vec<isize>) };
-            windows.push(hwnd.0 as isize);
+            let handle = hwnd.0 as isize;
+            // EnumWindows also returns hidden application helpers. Managing those
+            // creates empty tiles and causes unnecessary layout/event traffic.
+            // Native desktop cloaking is separate from WS_VISIBLE: keep visible
+            // windows on other desktops for should_manage to validate later.
+            if WindowsApi::is_window(handle)
+                && WindowsApi::is_window_visible(handle)
+                && !WindowsApi::is_iconic(handle)
+            {
+                windows.push(handle);
+            }
             true.into()
         }
         let mut windows = Vec::new();
