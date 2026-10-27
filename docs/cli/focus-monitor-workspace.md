@@ -17,3 +17,5 @@ Options:
           Print help
 
 ```
+
+Native mode (`"native_desktop_workspaces": true` in `komorebi.json`; requires restart): In native mode, the monitor selects the physical focus target and the workspace selects the global Windows desktop.

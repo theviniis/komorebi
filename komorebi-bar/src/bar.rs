@@ -49,6 +49,7 @@ use eframe::egui::Visuals;
 use font_loader::system_fonts;
 use font_loader::system_fonts::FontPropertyBuilder;
 use komorebi_client::Colour;
+use komorebi_client::DesktopNotification;
 use komorebi_client::MonitorNotification;
 use komorebi_client::NotificationEvent;
 use komorebi_client::PathExt;
@@ -880,6 +881,11 @@ impl eframe::App for Komobar {
                 let mut should_apply_config = false;
 
                 match notification.event {
+                    NotificationEvent::Desktop(DesktopNotification::Changed(_))
+                    | NotificationEvent::Desktop(DesktopNotification::CountChanged(_)) => {
+                        tracing::debug!("desktop changed or count changed - re-rendering bar");
+                        should_apply_config = true;
+                    }
                     NotificationEvent::VirtualDesktop(
                         VirtualDesktopNotification::EnteredAssociatedVirtualDesktop,
                     ) => {

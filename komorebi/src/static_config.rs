@@ -73,7 +73,6 @@ use crate::core::config_generation::ApplicationConfigurationGenerator;
 use crate::core::config_generation::ApplicationOptions;
 use crate::core::config_generation::MatchingRule;
 use crate::core::config_generation::MatchingStrategy;
-use crate::current_virtual_desktop;
 use crate::monitor;
 use crate::monitor::Monitor;
 use crate::monitor_reconciliator;
@@ -212,7 +211,7 @@ pub struct Wallpaper {
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 /// Workspace configuration
 pub struct WorkspaceConfig {
-    /// Name
+    /// Workspace name. In native mode, displayed names come from Windows and this field does not rename desktops.
     pub name: String,
     /// Layout
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -404,7 +403,7 @@ impl From<&Workspace> for WorkspaceConfig {
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 /// Monitor configuration
 pub struct MonitorConfig {
-    /// Workspace configurations
+    /// Workspace configurations. In native mode, entries configure existing desktops; excess entries do not create desktops.
     pub workspaces: Vec<WorkspaceConfig>,
     /// Monitor-specific work area offset
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -487,6 +486,9 @@ pub enum AppSpecificConfigurationPath {
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 /// The `komorebi.json` static configuration file reference for `v0.1.42`
 pub struct StaticConfig {
+    /// Opt in to native Windows desktop workspaces. Changing this requires restarting komorebi.
+    #[serde(default)]
+    pub native_desktop_workspaces: bool,
     /// DEPRECATED from v0.1.22: no longer required
     #[deprecated(note = "No longer required")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -719,6 +721,15 @@ pub struct AnimationsConfig {
 pub use komorebi_themes::KomorebiTheme;
 
 impl StaticConfig {
+    pub(crate) fn warn_if_mode_changed(&self, wm: &WindowManager) {
+        if self.native_desktop_workspaces != wm.native_desktop_workspaces {
+            tracing::warn!(
+                "native_desktop_workspaces changed; restart komorebi to apply it (active: {})",
+                wm.native_desktop_workspaces
+            );
+        }
+    }
+
     pub fn end_of_life(raw: &str) {
         let features = vec![
             "focus_follows_mouse",
@@ -874,6 +885,7 @@ impl From<&WindowManager> for StaticConfig {
         };
 
         Self {
+            native_desktop_workspaces: value.native_desktop_workspaces,
             #[allow(deprecated)]
             invisible_borders: None,
             resize_delta: Option::from(value.resize_delta),
@@ -1308,7 +1320,24 @@ impl StaticConfig {
         incoming: Receiver<WindowManagerEvent>,
         unix_listener: Option<UnixListener>,
     ) -> eyre::Result<WindowManager> {
+        Self::preload_with_mode(path, incoming, unix_listener, None)
+    }
+
+    pub(crate) fn preload_with_mode(
+        path: &PathBuf,
+        incoming: Receiver<WindowManagerEvent>,
+        unix_listener: Option<UnixListener>,
+        active_mode: Option<bool>,
+    ) -> eyre::Result<WindowManager> {
         let mut value = Self::read(path)?;
+        if let Some(mode) = active_mode {
+            if value.native_desktop_workspaces != mode {
+                tracing::warn!(
+                    "native_desktop_workspaces changed; restart komorebi to apply it (active: {mode})"
+                );
+            }
+            value.native_desktop_workspaces = mode;
+        }
         value.apply_globals()?;
 
         let listener = match unix_listener {
@@ -1331,13 +1360,24 @@ impl StaticConfig {
             }
         };
 
+        if value.native_desktop_workspaces {
+            crate::version_gate::require_supported_windows()?;
+        }
+
         let mut wm = WindowManager {
+            native_desktop_workspaces: value.native_desktop_workspaces,
+            virtual_desktop_id: if value.native_desktop_workspaces {
+                None
+            } else {
+                crate::current_virtual_desktop()
+            },
+            uncloack_to_ignore: 0,
+            window_api: std::sync::Arc::new(crate::windows_api::RealWindowsApi),
             monitors: Ring::default(),
             monitor_usr_idx_map: HashMap::new(),
             incoming_events: incoming,
             command_listener: listener,
             is_paused: false,
-            virtual_desktop_id: current_virtual_desktop(),
             work_area_offset: value.global_work_area_offset,
             window_management_behaviour: WindowManagementBehaviour {
                 current_behaviour: value
@@ -1375,8 +1415,12 @@ impl StaticConfig {
             has_pending_raise_op: false,
             pending_move_op: Arc::new(None),
             already_moved_window_handles: Arc::new(Mutex::new(HashSet::new())),
-            uncloack_to_ignore: 0,
             known_hwnds: HashMap::new(),
+            window_desktops: HashMap::new(),
+            focused_desktop_idx: 0,
+            desktop_count: 1,
+            desktop_ids: Vec::new(),
+            workspace_names: HashMap::new(),
         };
 
         #[allow(deprecated)]
@@ -1407,9 +1451,75 @@ impl StaticConfig {
         Ok(wm)
     }
 
+    pub(crate) fn align_configured_monitor(
+        monitor: &mut Monitor,
+        ids: &[crate::virtual_desktop::DesktopId],
+        configured_count: usize,
+    ) -> eyre::Result<()> {
+        if ids.is_empty() {
+            color_eyre::eyre::bail!("native desktop snapshot must not be empty");
+        }
+        if monitor
+            .workspaces()
+            .iter()
+            .skip(ids.len())
+            .any(|ws| !ws.is_empty())
+        {
+            color_eyre::eyre::bail!(
+                "reconcile live workspaces before applying native configuration"
+            );
+        }
+        if configured_count > ids.len() {
+            tracing::warn!(
+                "ignoring workspace configurations beyond the {} native desktops",
+                ids.len()
+            );
+        }
+        monitor.sync_workspace_count(ids.len());
+        for (workspace, &id) in monitor.workspaces_mut().iter_mut().zip(ids) {
+            workspace.native_desktop_id = Some(id);
+        }
+        Ok(())
+    }
+
+    // Both postload and reload must ignore all settings, including application rules,
+    // for configured workspace indices that have no corresponding native desktop.
+    fn append_workspace_matching_rules(
+        workspace_matching_rules: &mut Vec<WorkspaceMatchingRule>,
+        monitor_config: &MonitorConfig,
+        monitor_index: usize,
+        workspace_count: usize,
+    ) {
+        for (workspace_index, ws) in monitor_config
+            .workspaces
+            .iter()
+            .take(workspace_count)
+            .enumerate()
+        {
+            for (rules, initial_only) in [
+                (&ws.workspace_rules, false),
+                (&ws.initial_workspace_rules, true),
+            ] {
+                if let Some(rules) = rules {
+                    for rule in rules {
+                        workspace_matching_rules.push(WorkspaceMatchingRule {
+                            monitor_index,
+                            workspace_index,
+                            matching_rule: rule.clone(),
+                            initial_only,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     pub fn postload(path: &PathBuf, wm: &Arc<Mutex<WindowManager>>) -> eyre::Result<()> {
         let mut value = Self::read(path)?;
         let mut wm = wm.lock();
+        wm.sync_desktop_count()?;
+        let native_mode = wm.native_desktop_workspaces;
+        let native_ids = wm.desktop_ids.clone();
 
         let configs_with_preference: Vec<_> =
             DISPLAY_INDEX_PREFERENCES.read().keys().copied().collect();
@@ -1454,7 +1564,15 @@ impl StaticConfig {
                     configs_used.push(used_config_idx);
                 }
 
-                monitor.ensure_workspace_count(monitor_config.workspaces.len());
+                if native_mode {
+                    Self::align_configured_monitor(
+                        monitor,
+                        &native_ids,
+                        monitor_config.workspaces.len(),
+                    )?;
+                } else {
+                    monitor.ensure_workspace_count(monitor_config.workspaces.len());
+                }
                 monitor.work_area_offset = monitor_config.work_area_offset;
                 monitor.window_based_work_area_offset =
                     monitor_config.window_based_work_area_offset;
@@ -1493,29 +1611,12 @@ impl StaticConfig {
                 }
 
                 let mut workspace_matching_rules = WORKSPACE_MATCHING_RULES.lock();
-                for (j, ws) in monitor_config.workspaces.iter().enumerate() {
-                    if let Some(rules) = &ws.workspace_rules {
-                        for r in rules {
-                            workspace_matching_rules.push(WorkspaceMatchingRule {
-                                monitor_index: i,
-                                workspace_index: j,
-                                matching_rule: r.clone(),
-                                initial_only: false,
-                            });
-                        }
-                    }
-
-                    if let Some(rules) = &ws.initial_workspace_rules {
-                        for r in rules {
-                            workspace_matching_rules.push(WorkspaceMatchingRule {
-                                monitor_index: i,
-                                workspace_index: j,
-                                matching_rule: r.clone(),
-                                initial_only: true,
-                            });
-                        }
-                    }
-                }
+                Self::append_workspace_matching_rules(
+                    &mut workspace_matching_rules,
+                    monitor_config,
+                    i,
+                    monitor.workspaces().len(),
+                );
             }
         }
 
@@ -1547,7 +1648,15 @@ impl StaticConfig {
                         None,
                     );
 
-                    m.ensure_workspace_count(monitor_config.workspaces.len());
+                    if native_mode {
+                        Self::align_configured_monitor(
+                            &mut m,
+                            &native_ids,
+                            monitor_config.workspaces.len(),
+                        )?;
+                    } else {
+                        m.ensure_workspace_count(monitor_config.workspaces.len());
+                    }
                     m.work_area_offset = monitor_config.work_area_offset;
                     m.window_based_work_area_offset = monitor_config.window_based_work_area_offset;
                     m.window_based_work_area_offset_limit = monitor_config
@@ -1573,6 +1682,7 @@ impl StaticConfig {
             }
         }
 
+        wm.sync_desktop_count()?;
         wm.enforce_workspace_rules()?;
 
         if value.border == Some(true) {
@@ -1585,7 +1695,11 @@ impl StaticConfig {
     pub fn reload(path: &PathBuf, wm: &mut WindowManager) -> eyre::Result<()> {
         let mut value = Self::read(path)?;
 
+        value.warn_if_mode_changed(wm);
         value.apply_globals()?;
+        wm.sync_desktop_count()?;
+        let native_mode = wm.native_desktop_workspaces;
+        let native_ids = wm.desktop_ids.clone();
 
         let configs_with_preference: Vec<_> =
             DISPLAY_INDEX_PREFERENCES.read().keys().copied().collect();
@@ -1628,7 +1742,15 @@ impl StaticConfig {
                     configs_used.push(used_config_idx);
                 }
 
-                monitor.ensure_workspace_count(monitor_config.workspaces.len());
+                if native_mode {
+                    Self::align_configured_monitor(
+                        monitor,
+                        &native_ids,
+                        monitor_config.workspaces.len(),
+                    )?;
+                } else {
+                    monitor.ensure_workspace_count(monitor_config.workspaces.len());
+                }
                 if monitor.work_area_offset.is_none() {
                     monitor.work_area_offset = monitor_config.work_area_offset;
                 }
@@ -1661,29 +1783,12 @@ impl StaticConfig {
                 }
 
                 let mut workspace_matching_rules = WORKSPACE_MATCHING_RULES.lock();
-                for (j, ws) in monitor_config.workspaces.iter().enumerate() {
-                    if let Some(rules) = &ws.workspace_rules {
-                        for r in rules {
-                            workspace_matching_rules.push(WorkspaceMatchingRule {
-                                monitor_index: i,
-                                workspace_index: j,
-                                matching_rule: r.clone(),
-                                initial_only: false,
-                            });
-                        }
-                    }
-
-                    if let Some(rules) = &ws.initial_workspace_rules {
-                        for r in rules {
-                            workspace_matching_rules.push(WorkspaceMatchingRule {
-                                monitor_index: i,
-                                workspace_index: j,
-                                matching_rule: r.clone(),
-                                initial_only: true,
-                            });
-                        }
-                    }
-                }
+                Self::append_workspace_matching_rules(
+                    &mut workspace_matching_rules,
+                    monitor_config,
+                    i,
+                    monitor.workspaces().len(),
+                );
             }
         }
 
@@ -1715,7 +1820,15 @@ impl StaticConfig {
                         None,
                     );
 
-                    m.ensure_workspace_count(monitor_config.workspaces.len());
+                    if native_mode {
+                        Self::align_configured_monitor(
+                            &mut m,
+                            &native_ids,
+                            monitor_config.workspaces.len(),
+                        )?;
+                    } else {
+                        m.ensure_workspace_count(monitor_config.workspaces.len());
+                    }
                     m.work_area_offset = monitor_config.work_area_offset;
                     m.window_based_work_area_offset = monitor_config.window_based_work_area_offset;
                     m.window_based_work_area_offset_limit = monitor_config
@@ -1785,6 +1898,7 @@ impl StaticConfig {
             Some(FocusFollowsMouseImplementation::Komorebi) => {}
         };
 
+        wm.sync_desktop_count()?;
         let monitor_count = wm.monitors().len();
 
         for i in 0..monitor_count {
@@ -1995,6 +2109,100 @@ mod tests {
     use crate::WorkspaceConfig;
 
     #[test]
+    fn native_desktops_are_explicitly_opt_in() {
+        for input in [r#"{}"#, r#"{"native_desktop_workspaces":false}"#] {
+            let config: StaticConfig = serde_json::from_str(input).unwrap();
+            assert!(!config.native_desktop_workspaces);
+            assert_eq!(
+                serde_json::to_value(config).unwrap()["native_desktop_workspaces"],
+                false
+            );
+        }
+        let config: StaticConfig =
+            serde_json::from_str(r#"{"native_desktop_workspaces":true}"#).unwrap();
+        assert!(config.native_desktop_workspaces);
+        assert!(
+            serde_json::from_str::<StaticConfig>(r#"{"native_desktop_workspaces":"true"}"#)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn workspace_rule_registration_ignores_excess_native_workspace_configs() {
+        let config: super::MonitorConfig = serde_json::from_value(serde_json::json!({
+            "workspaces": (0..3).map(|index| serde_json::json!({
+                "name": format!("Workspace {index}"),
+                "workspace_rules": [{"kind": "Exe", "id": format!("persistent-{index}.exe")}],
+                "initial_workspace_rules": [{"kind": "Exe", "id": format!("initial-{index}.exe")}]
+            })).collect::<Vec<_>>()
+        }))
+        .unwrap();
+        let mut monitor = crate::monitor::new(
+            0,
+            crate::core::Rect::default(),
+            crate::core::Rect::default(),
+            "FakeMonitor".into(),
+            "FakeDevice".into(),
+            "FakeDeviceID".into(),
+            None,
+        );
+        let ids = [
+            crate::virtual_desktop::DesktopId(1),
+            crate::virtual_desktop::DesktopId(2),
+        ];
+        StaticConfig::align_configured_monitor(&mut monitor, &ids, config.workspaces.len())
+            .unwrap();
+
+        // Exercise the shared registration used by postload and reload, without a
+        // live desktop backend or global configuration changes.
+        let mut rules = Vec::new();
+        StaticConfig::append_workspace_matching_rules(
+            &mut rules,
+            &config,
+            1,
+            monitor.workspaces().len(),
+        );
+        assert_eq!(rules.len(), 4);
+        for (workspace_index, pair) in rules.chunks_exact(2).enumerate() {
+            assert_eq!(pair[0].monitor_index, 1);
+            assert_eq!(pair[1].monitor_index, 1);
+            assert_eq!(pair[0].workspace_index, workspace_index);
+            assert_eq!(pair[1].workspace_index, workspace_index);
+            assert!(!pair[0].initial_only);
+            assert!(pair[1].initial_only);
+            assert_eq!(
+                pair[0].matching_rule,
+                config.workspaces[workspace_index]
+                    .workspace_rules
+                    .as_ref()
+                    .unwrap()[0]
+            );
+            assert_eq!(
+                pair[1].matching_rule,
+                config.workspaces[workspace_index]
+                    .initial_workspace_rules
+                    .as_ref()
+                    .unwrap()[0]
+            );
+        }
+
+        // A reload clears the old list before rebuilding it. Simulate an old
+        // three-desktop configuration so both kinds of stale rules are covered.
+        rules.clear();
+        StaticConfig::append_workspace_matching_rules(&mut rules, &config, 1, 3);
+        assert_eq!(rules.len(), 6);
+        rules.clear();
+        StaticConfig::append_workspace_matching_rules(
+            &mut rules,
+            &config,
+            1,
+            monitor.workspaces().len(),
+        );
+        assert_eq!(rules.len(), 4);
+        assert!(rules.iter().all(|rule| rule.workspace_index < ids.len()));
+    }
+
+    #[test]
     #[ignore = "this fails on github actions due to rate limiting changes introduced in may 2025"]
     fn backwards_compat() {
         let root = vec!["0.1.17", "0.1.18", "0.1.19"];
@@ -2027,9 +2235,7 @@ mod tests {
     #[test]
     fn deserialize_custom_layout_rules() {
         // set an environment variable for testing
-        unsafe {
-            std::env::set_var("VAR", "VALUE");
-        }
+        let _var_guard = crate::TestEnvGuard::set("VAR", "VALUE");
 
         let config = r#"
         {

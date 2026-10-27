@@ -41,6 +41,7 @@ use komorebi::HOME_DIR;
 use komorebi::INITIAL_CONFIGURATION_LOADED;
 use komorebi::SESSION_ID;
 use komorebi::border_manager;
+use komorebi::desktop_listener::listen_for_desktop_events;
 use komorebi::focus_manager;
 use komorebi::load_configuration;
 use komorebi::monitor_reconciliator;
@@ -57,6 +58,7 @@ use komorebi::transparency_manager;
 use komorebi::window_manager::WindowManager;
 use komorebi::windows_api::WindowsApi;
 use komorebi::winevent_listener;
+use komorebi::winevent_listener::event_tx;
 
 fn setup(log_level: LogLevel) -> eyre::Result<(WorkerGuard, WorkerGuard)> {
     if std::env::var("RUST_LIB_BACKTRACE").is_err() {
@@ -315,7 +317,13 @@ fn main() -> eyre::Result<()> {
 
     if !opts.clean_state && dumped_state.is_file() {
         if let Ok(state) = serde_json::from_str(&std::fs::read_to_string(&dumped_state)?) {
-            wm.lock().apply_state(state);
+            if let Err(error) = wm.lock().apply_state(state) {
+                tracing::warn!(
+                    "cannot apply state from {}: {}",
+                    dumped_state.display(),
+                    error
+                );
+            }
         } else {
             tracing::warn!(
                 "cannot apply state from {}; state struct is not up to date",
@@ -338,6 +346,10 @@ fn main() -> eyre::Result<()> {
 
     if let Some(port) = opts.tcp_port {
         listen_for_commands_tcp(wm.clone(), port);
+    }
+
+    if wm.lock().native_desktop_workspaces {
+        listen_for_desktop_events(event_tx())?;
     }
 
     listen_for_events(wm.clone());

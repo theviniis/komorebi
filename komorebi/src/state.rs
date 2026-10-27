@@ -1,6 +1,5 @@
 use crate::BorderColours;
 use crate::BorderStyle;
-use crate::CURRENT_VIRTUAL_DESKTOP;
 use crate::CUSTOM_FFM;
 use crate::DATA_DIR;
 use crate::DISPLAY_INDEX_PREFERENCES;
@@ -55,6 +54,8 @@ use std::sync::atomic::Ordering;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct State {
+    #[serde(default)]
+    pub native_desktop_workspaces: bool,
     pub monitors: Ring<Monitor>,
     pub monitor_usr_idx_map: HashMap<usize, usize>,
     pub is_paused: bool,
@@ -68,12 +69,26 @@ pub struct State {
     pub focus_follows_mouse: Option<FocusFollowsMouseImplementation>,
     pub mouse_follows_focus: bool,
     pub has_pending_raise_op: bool,
-    pub virtual_desktop_id: Option<Vec<u8>>,
+    #[serde(default)]
+    pub focused_desktop_idx: usize,
+    #[serde(default = "default_desktop_count")]
+    pub desktop_count: usize,
+}
+
+fn default_desktop_count() -> usize {
+    1
 }
 
 impl State {
     pub fn has_been_modified(&self, wm: &WindowManager) -> bool {
         let new = Self::from(wm);
+
+        if self.native_desktop_workspaces != new.native_desktop_workspaces
+            || self.focused_desktop_idx != new.focused_desktop_idx
+            || self.desktop_count != new.desktop_count
+        {
+            return true;
+        }
 
         if self.monitors != new.monitors {
             return true;
@@ -157,7 +172,6 @@ pub struct GlobalState {
     pub configuration_dir: PathBuf,
     pub data_dir: PathBuf,
     pub custom_ffm: bool,
-    pub current_virtual_desktop_id: Option<Vec<u8>>,
 }
 
 impl Default for GlobalState {
@@ -217,7 +231,6 @@ impl Default for GlobalState {
             configuration_dir: HOME_DIR.clone(),
             data_dir: DATA_DIR.clone(),
             custom_ffm: CUSTOM_FFM.load(Ordering::SeqCst),
-            current_virtual_desktop_id: CURRENT_VIRTUAL_DESKTOP.lock().clone(),
         }
     }
 }
@@ -233,6 +246,7 @@ impl From<&WindowManager> for State {
             .monitors()
             .iter()
             .map(|monitor| Monitor {
+                native_desktop_workspaces: monitor.native_desktop_workspaces,
                 id: monitor.id,
                 name: monitor.name.clone(),
                 device: monitor.device.clone(),
@@ -249,6 +263,7 @@ impl From<&WindowManager> for State {
                         .workspaces()
                         .iter()
                         .map(|workspace| Workspace {
+                            native_desktop_id: workspace.native_desktop_id,
                             name: workspace.name.clone(),
                             containers: workspace.containers.clone(),
                             monocle_container: workspace.monocle_container.clone(),
@@ -315,7 +330,20 @@ impl From<&WindowManager> for State {
             mouse_follows_focus: wm.mouse_follows_focus,
             has_pending_raise_op: wm.has_pending_raise_op,
             unmanaged_window_operation_behaviour: wm.unmanaged_window_operation_behaviour,
-            virtual_desktop_id: wm.virtual_desktop_id.clone(),
+            focused_desktop_idx: wm.focused_desktop_idx,
+            desktop_count: wm.desktop_count,
+            native_desktop_workspaces: wm.native_desktop_workspaces,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serialized_global_state_has_no_legacy_virtual_desktop_field() {
+        let json = serde_json::to_string(&GlobalState::default()).unwrap();
+        assert!(!json.contains("current_virtual_desktop_id"));
     }
 }

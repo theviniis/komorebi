@@ -1,0 +1,16 @@
+{
+  "snapshot": "C:\\Users\\thevi\\AppData\\Local\\Temp\\komorebi-stage1-baseline-y6m95ubb",
+  "base": "e57c037d995f16d880976c8e4fdf9f79ad06a2fe",
+  "description": "Diagnostic reconstruction: HEAD plus preexisting window_desktops field, initialization, and four tracking methods. Original dirty files were not snapshotted, so this is not a byte-exact historical checkout.",
+  "files": {
+    "komorebi\\src\\window_manager.rs": "54510906d85021973d909644db0a3e460ebfa7ceda2205680e36a58d63a30fe0",
+    "komorebi\\src\\static_config.rs": "0e2dfe07730a3828131ae930cfe1b3abcd4875b1dc2da6c790c56e6f6595f020"
+  },
+  "diagnostic_binary_sha256": "1067fb33549bdc4748c550f094b8f78db453dcacee4e342dfc013a7a70ada6be",
+  "source_lf_sha256": {
+    "komorebi/src/window_manager.rs": "cf979bbb6370262a73ed7c80a3a5934755ab57b91eff0ddc46f78d4af9b42706",
+    "komorebi/src/static_config.rs": "95b35cf23c45da6e246c44b88cc341217b47b56f0fe84913b6767cf5ff8df733",
+    "komorebi/src/monitor_reconciliator/mod.rs": "36b5bb8f97f513800dce07ff1c9b771e1df279d6eee81a8e3b7df68d221849be"
+  },
+  "patch_verified_against_base": true
+}

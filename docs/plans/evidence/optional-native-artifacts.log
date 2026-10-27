@@ -1,0 +1,10 @@
+komorebi: payload matches release; sha256=172de628ab7373d1cc82201f16e586077fd77d498bca2639285675f9b0f5cdce
+komorebic: payload matches release; sha256=2c8862c2f9971cb6b65f893d94e226e86275882624e95d76792140fb2477b7e5
+komorebic-no-console: payload matches release; sha256=e7e2840503fa9738c40a15855c53acac2eb21d948c463fab7d874f00f36775c9
+komorebi-gui: payload matches release; sha256=565dc6538e098b03b38911e8fdf9ef820094beec90dc3ae489f32bf963afe0d3
+komorebi-bar: payload matches release; sha256=e19fda28f6c0f716e570727a3f6179e72743e93b42ea683ca80d1582fdad8e71
+komorebi-shortcuts: payload matches release; sha256=ef1a17e7b6614a800ec9cf0144641bbb1bdf47a6c3a793f25d664bb085fcc446
+License payload matches source
+ProductVersion=0.1.42; Platform=x64
+MSI bytes=28336128; sha256=58a0be765986997df1f5ddd625862bce63b3be173cc8ea8edbac5c3e0905a2bf
+Installer was extracted for inspection, not installed.

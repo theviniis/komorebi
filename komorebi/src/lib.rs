@@ -7,6 +7,7 @@ pub mod com;
 pub mod ring;
 pub mod container;
 pub mod core;
+pub mod desktop_listener;
 pub mod focus_manager;
 pub mod lockable_sequence;
 pub mod monitor;
@@ -23,6 +24,8 @@ pub mod static_config;
 pub mod styles;
 pub mod theme_manager;
 pub mod transparency_manager;
+pub mod version_gate;
+pub mod virtual_desktop;
 pub mod window;
 pub mod window_manager;
 pub mod window_manager_event;
@@ -75,10 +78,12 @@ use serde::Serialize;
 use state::State;
 use uds_windows::UnixStream;
 use which::which;
+
 use winreg::RegKey;
 use winreg::enums::HKEY_CURRENT_USER;
 
 lazy_static! {
+    static ref CURRENT_VIRTUAL_DESKTOP: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
     static ref HIDDEN_HWNDS: Arc<Mutex<Vec<isize>>> = Arc::new(Mutex::new(vec![]));
     static ref LAYERED_WHITELIST: Arc<Mutex<Vec<MatchingRule>>> = Arc::new(Mutex::new(vec![
         MatchingRule::Simple(IdWithIdentifier {
@@ -210,7 +215,19 @@ lazy_static! {
             home
         })
     };
-    pub static ref DATA_DIR: PathBuf = dirs::data_local_dir().expect("there is no local data directory").join("komorebi");
+    pub static ref DATA_DIR: PathBuf = {
+        // Unit tests must not overwrite the live daemon's HWND recovery file or sockets.
+        #[cfg(test)]
+        {
+            let path = std::env::temp_dir().join(format!("kmt-{}", std::process::id()));
+            std::fs::create_dir_all(&path).expect("could not create isolated test data directory");
+            path
+        }
+        #[cfg(not(test))]
+        {
+            dirs::data_local_dir().expect("there is no local data directory").join("komorebi")
+        }
+    };
     pub static ref AHK_EXE: String = {
         let mut ahk: String = String::from("autohotkey.exe");
 
@@ -236,8 +253,6 @@ lazy_static! {
         Arc::new(Mutex::new(HashMap::new()));
 
     static ref FLOATING_WINDOW_TOGGLE_ASPECT_RATIO: Arc<Mutex<AspectRatio>> = Arc::new(Mutex::new(AspectRatio::Predefined(PredefinedAspectRatio::Widescreen)));
-
-    static ref CURRENT_VIRTUAL_DESKTOP: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
 
     pub static ref LAYOUT_DEFAULTS: Arc<Mutex<HashMap<DefaultLayout, LayoutDefaultEntry>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -284,50 +299,6 @@ pub trait Lockable {
     fn set_locked(&mut self, locked: bool) -> &mut Self;
 }
 
-#[must_use]
-pub fn current_virtual_desktop() -> Option<Vec<u8>> {
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-
-    // This is the path on Windows 10
-    let mut current = hkcu
-        .open_subkey(format!(
-            r#"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\SessionInfo\{}\VirtualDesktops"#,
-            SESSION_ID.load(Ordering::SeqCst)
-        ))
-        .ok()
-        .and_then(
-            |desktops| match desktops.get_raw_value("CurrentVirtualDesktop") {
-                Ok(current) => Option::from(current.bytes),
-                Err(_) => None,
-            },
-        );
-
-    // This is the path on Windows 11
-    if current.is_none() {
-        current = hkcu
-            .open_subkey(r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VirtualDesktops")
-            .ok()
-            .and_then(
-                |desktops| match desktops.get_raw_value("CurrentVirtualDesktop") {
-                    Ok(current) => Option::from(current.bytes),
-                    Err(_) => None,
-                },
-            );
-    }
-
-    // For Win10 users that do not use virtual desktops, the CurrentVirtualDesktop value will not
-    // exist until one has been created in the task view
-
-    // The registry value will also not exist on user login if virtual desktops have been created
-    // but the task view has not been initiated
-
-    // In both of these cases, we return None, and the virtual desktop validation will never run. In
-    // the latter case, if the user desires this validation after initiating the task view, komorebi
-    // should be restarted, and then when this // fn runs again for the first time, it will pick up
-    // the value of CurrentVirtualDesktop and validate against it accordingly
-    current.map(|current| current.to_vec())
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(untagged)]
@@ -335,14 +306,15 @@ pub enum NotificationEvent {
     WindowManager(WindowManagerEvent),
     Socket(SocketMessage),
     Monitor(MonitorNotification),
+    Desktop(DesktopNotification),
     VirtualDesktop(VirtualDesktopNotification),
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-pub enum VirtualDesktopNotification {
-    EnteredAssociatedVirtualDesktop,
-    LeftAssociatedVirtualDesktop,
+pub enum DesktopNotification {
+    Changed(usize),
+    CountChanged(usize),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -461,4 +433,128 @@ pub fn load_configuration() -> eyre::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) struct TestEnvGuard(&'static str, Option<std::ffi::OsString>);
+
+#[cfg(test)]
+impl TestEnvGuard {
+    pub(crate) fn set(key: &'static str, value: &str) -> Self {
+        let guard = Self(key, std::env::var_os(key));
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        guard
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestEnvGuard {
+    fn drop(&mut self) {
+        unsafe {
+            match &self.1 {
+                Some(value) => std::env::set_var(self.0, value),
+                None => std::env::remove_var(self.0),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod test_environment {
+    #[test]
+    fn restores_userprofile_after_unwind() {
+        let original = std::env::var_os("USERPROFILE");
+        assert!(
+            std::panic::catch_unwind(|| {
+                let _guard = super::TestEnvGuard::set("USERPROFILE", "C:\\Users\\test-guard");
+                panic!("exercise environment guard unwind");
+            })
+            .is_err()
+        );
+        assert_eq!(std::env::var_os("USERPROFILE"), original);
+    }
+}
+
+/// Process the startup update directly: enqueueing it can deadlock a consumer
+/// whose bounded queue was filled before its worker started.
+pub(crate) fn notifications_with_initial<T>(
+    receiver: crossbeam_channel::Receiver<T>,
+    initial: T,
+) -> impl Iterator<Item = T> {
+    std::iter::once(initial).chain(receiver)
+}
+
+#[cfg(test)]
+mod notification_startup_tests {
+    #[test]
+    fn initial_update_runs_with_empty_or_full_queue_without_losing_pending_updates() {
+        for capacity in [1, 20, 50] {
+            for pending in [0, capacity] {
+                let (sender, receiver) = crossbeam_channel::bounded(capacity);
+                for value in 0..pending {
+                    sender.try_send(value).unwrap();
+                }
+                drop(sender);
+                let updates =
+                    super::notifications_with_initial(receiver, usize::MAX).collect::<Vec<_>>();
+                let expected = std::iter::once(usize::MAX)
+                    .chain(0..pending)
+                    .collect::<Vec<_>>();
+                assert_eq!(updates, expected);
+            }
+        }
+    }
+}
+
+#[must_use]
+pub fn current_virtual_desktop() -> Option<Vec<u8>> {
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+
+    // This is the path on Windows 10
+    let mut current = hkcu
+        .open_subkey(format!(
+            r#"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\SessionInfo\{}\VirtualDesktops"#,
+            SESSION_ID.load(Ordering::SeqCst)
+        ))
+        .ok()
+        .and_then(
+            |desktops| match desktops.get_raw_value("CurrentVirtualDesktop") {
+                Ok(current) => Option::from(current.bytes),
+                Err(_) => None,
+            },
+        );
+
+    // This is the path on Windows 11
+    if current.is_none() {
+        current = hkcu
+            .open_subkey(r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VirtualDesktops")
+            .ok()
+            .and_then(
+                |desktops| match desktops.get_raw_value("CurrentVirtualDesktop") {
+                    Ok(current) => Option::from(current.bytes),
+                    Err(_) => None,
+                },
+            );
+    }
+
+    // For Win10 users that do not use virtual desktops, the CurrentVirtualDesktop value will not
+    // exist until one has been created in the task view
+
+    // The registry value will also not exist on user login if virtual desktops have been created
+    // but the task view has not been initiated
+
+    // In both of these cases, we return None, and the virtual desktop validation will never run. In
+    // the latter case, if the user desires this validation after initiating the task view, komorebi
+    // should be restarted, and then when this // fn runs again for the first time, it will pick up
+    // the value of CurrentVirtualDesktop and validate against it accordingly
+    current.map(|current| current.to_vec())
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum VirtualDesktopNotification {
+    EnteredAssociatedVirtualDesktop,
+    LeftAssociatedVirtualDesktop,
 }

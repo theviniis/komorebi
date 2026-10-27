@@ -56,6 +56,9 @@ use uds_windows::UnixStream;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Workspace {
+    /// Runtime association survives monitor caching; public state remains indexed.
+    #[serde(skip)]
+    pub(crate) native_desktop_id: Option<crate::virtual_desktop::DesktopId>,
     pub name: Option<String>,
     pub containers: Ring<Container>,
     pub monocle_container: Option<Container>,
@@ -127,6 +130,7 @@ impl_ring_elements!(Workspace, Window, "floating_window");
 impl Default for Workspace {
     fn default() -> Self {
         Self {
+            native_desktop_id: None,
             name: None,
             containers: Ring::default(),
             monocle_container: None,
@@ -229,7 +233,9 @@ impl Workspace {
         config: &WorkspaceConfig,
         layout_defaults: Option<&HashMap<DefaultLayout, LayoutDefaultEntry>>,
     ) -> eyre::Result<()> {
-        self.name = Option::from(config.name.clone());
+        if self.native_desktop_id.is_none() {
+            self.name = Some(config.name.clone());
+        }
 
         self.container_padding = config.container_padding;
 
@@ -1069,6 +1075,50 @@ impl Workspace {
         }
 
         idx
+    }
+
+    /// Detach bookkeeping only: native desktop movement already happened in Windows.
+    /// Restoring, hiding or focusing here would interfere with Task View and stack moves.
+    pub(crate) fn detach_window_for_desktop_move(&mut self, hwnd: isize) -> Option<(Window, bool)> {
+        fn detach(container: &mut Container, idx: usize) -> Option<Window> {
+            let selected_hwnd = container.focused_window().map(|window| window.hwnd);
+            let window = container.remove_window_by_idx(idx);
+            // Removing another member must preserve the visible selection. The
+            // general removal helper otherwise selects the removed index's predecessor.
+            if let Some(selected_idx) =
+                selected_hwnd.and_then(|hwnd| container.idx_for_window(hwnd))
+            {
+                container.focus_window(selected_idx);
+            }
+            window
+        }
+
+        if let Some(idx) = self.floating_windows().iter().position(|w| w.hwnd == hwnd) {
+            return self.floating_windows_mut().remove(idx).map(|w| (w, true));
+        }
+        if self.maximized_window.is_some_and(|w| w.hwnd == hwnd) {
+            self.maximized_window_restore_idx = None;
+            return self.maximized_window.take().map(|w| (w, false));
+        }
+        if let Some(container) = &mut self.monocle_container
+            && let Some(idx) = container.idx_for_window(hwnd)
+        {
+            let window = detach(container, idx);
+            if container.windows().is_empty() {
+                self.monocle_container = None;
+                self.monocle_container_restore_idx = None;
+            }
+            return window.map(|w| (w, false));
+        }
+        let container_idx = self.container_idx_for_window(hwnd)?;
+        let container = self.containers_mut().get_mut(container_idx)?;
+        let window_idx = container.idx_for_window(hwnd)?;
+        let window = detach(container, window_idx)?;
+        if container.windows().is_empty() {
+            self.remove_container_by_idx(container_idx);
+            self.focus_previous_container();
+        }
+        Some((window, false))
     }
 
     pub fn remove_window(&mut self, hwnd: isize) -> eyre::Result<()> {

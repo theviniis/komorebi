@@ -147,8 +147,7 @@ impl Container {
     }
 
     pub fn add_window(&mut self, window: Window) {
-        self.windows_mut().push_back(window);
-        self.focus_window(self.windows().len().saturating_sub(1));
+        self.add_window_without_visibility_changes(window);
         let focused_window_idx = self.focused_window_idx();
 
         for (i, window) in self.windows().iter().enumerate() {
@@ -156,6 +155,12 @@ impl Container {
                 window.hide();
             }
         }
+    }
+
+    /// Update stack membership without invoking Win32 visibility operations.
+    pub(crate) fn add_window_without_visibility_changes(&mut self, window: Window) {
+        self.windows_mut().push_back(window);
+        self.focus_window(self.windows().len().saturating_sub(1));
     }
 
     #[tracing::instrument(skip(self))]

@@ -1,5 +1,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
+mod traditional;
+
 use crate::DISPLAY_INDEX_PREFERENCES;
 use crate::DUPLICATE_MONITOR_SERIAL_IDS;
 use crate::Notification;
@@ -251,9 +253,23 @@ where
     F: Fn() -> I + Copy,
     I: Iterator<Item = Result<win32_display_data::Device, win32_display_data::Error>>,
 {
-    tracing::info!("listening");
+    handle_notifications_from(wm, display_provider, event_rx())
+}
 
-    let receiver = event_rx();
+fn handle_notifications_from<F, I>(
+    wm: Arc<Mutex<WindowManager>>,
+    display_provider: F,
+    receiver: Receiver<MonitorNotification>,
+) -> color_eyre::Result<()>
+where
+    F: Fn() -> I + Copy,
+    I: Iterator<Item = Result<win32_display_data::Device, win32_display_data::Error>>,
+{
+    if !wm.lock().native_desktop_workspaces {
+        return traditional::handle_traditional_notifications(wm, display_provider, receiver);
+    }
+
+    tracing::info!("listening");
 
     'receiver: for notification in receiver {
         if !ACTIVE.load_consume()
@@ -276,6 +292,12 @@ where
         let mut wm = wm.lock();
 
         let initial_state = State::from(wm.as_ref());
+        if !matches!(
+            notification,
+            MonitorNotification::EnteringSuspendedState | MonitorNotification::SessionLocked
+        ) {
+            wm.sync_desktop_count()?;
+        }
 
         match notification {
             MonitorNotification::EnteringSuspendedState | MonitorNotification::SessionLocked => {
@@ -369,606 +391,29 @@ where
             MonitorNotification::ResumingFromSuspendedState
             | MonitorNotification::SessionUnlocked
             | MonitorNotification::DisplayConnectionChange => {
-                tracing::debug!("handling display connection change notification");
-                let mut monitor_cache = MONITOR_CACHE
-                    .get_or_init(|| Mutex::new(HashMap::new()))
-                    .lock();
-
-                let initial_monitor_count = wm.monitors().len();
-
-                // Get the currently attached display devices
-                let attached_devices = attached_display_devices(display_provider)?;
-
-                // Make sure that in our state any attached displays have the latest Win32 data
-                for monitor in wm.monitors_mut() {
-                    for attached in &attached_devices {
-                        let serial_number_ids_match = if let (Some(attached_snid), Some(m_snid)) =
-                            (&attached.serial_number_id, &monitor.serial_number_id)
-                        {
-                            attached_snid.eq(m_snid)
-                        } else {
-                            false
-                        };
-
-                        if serial_number_ids_match || attached.device_id.eq(&monitor.device_id) {
-                            monitor.id = attached.id;
-                            monitor.device = attached.device.clone();
-                            monitor.device_id = attached.device_id.clone();
-                            monitor.serial_number_id = attached.serial_number_id.clone();
-                            monitor.name = attached.name.clone();
-                            monitor.size = attached.size;
-                            monitor.work_area_size = attached.work_area_size;
-                        }
-                    }
-                }
-
-                if initial_monitor_count == attached_devices.len() {
-                    tracing::debug!("monitor counts match, reconciliation not required");
-                    drop(wm);
+                let mut attached = attached_display_devices(display_provider)?;
+                if attached.is_empty() {
                     continue 'receiver;
                 }
-
-                if attached_devices.is_empty() {
-                    tracing::debug!(
-                        "no devices found, skipping reconciliation to avoid breaking state"
-                    );
-                    drop(wm);
-                    continue 'receiver;
-                }
-
-                // Handle potential monitor removal with verification
-                let attached_devices = if initial_monitor_count > attached_devices.len() {
-                    tracing::info!(
-                        "potential monitor removal detected ({initial_monitor_count} vs {}), verifying in 3s",
-                        attached_devices.len()
-                    );
-
-                    // Release locks before waiting
-                    drop(wm);
-                    drop(monitor_cache);
-
-                    // Wait 3 seconds for display state to stabilize
-                    std::thread::sleep(std::time::Duration::from_secs(3));
-
-                    // Re-query the Win32 display APIs
-                    let re_queried_devices = match attached_display_devices(display_provider) {
-                        Ok(devices) => devices,
-                        Err(e) => {
-                            tracing::error!("failed to re-query display devices: {}", e);
-                            continue 'receiver;
-                        }
-                    };
-
-                    tracing::debug!(
-                        "after verification: wm had {} monitors, initial query found {}, re-query found {}",
-                        initial_monitor_count,
-                        attached_devices.len(),
-                        re_queried_devices.len()
-                    );
-
-                    // If monitors are back, the removal was transient (spurious event)
-                    // Still try to restore state since windows might have been minimized
-                    if re_queried_devices.len() >= initial_monitor_count {
-                        tracing::info!(
-                            "monitor removal was transient (spurious event), attempting state restoration. Initial: {}, Re-queried: {}",
-                            initial_monitor_count,
-                            re_queried_devices.len()
-                        );
-
-                        // Re-acquire locks for state restoration
-                        wm = wm_arc.lock();
-
-                        // Update Win32 data for all monitors
-                        for monitor in wm.monitors_mut() {
-                            for attached in &re_queried_devices {
-                                let serial_number_ids_match =
-                                    if let (Some(attached_snid), Some(m_snid)) =
-                                        (&attached.serial_number_id, &monitor.serial_number_id)
-                                    {
-                                        attached_snid.eq(m_snid)
-                                    } else {
-                                        false
-                                    };
-
-                                if serial_number_ids_match
-                                    || attached.device_id.eq(&monitor.device_id)
-                                {
-                                    monitor.id = attached.id;
-                                    monitor.device = attached.device.clone();
-                                    monitor.device_id = attached.device_id.clone();
-                                    monitor.serial_number_id = attached.serial_number_id.clone();
-                                    monitor.name = attached.name.clone();
-                                    monitor.size = attached.size;
-                                    monitor.work_area_size = attached.work_area_size;
-                                }
-                            }
-                        }
-
-                        // Try to restore windows that might have been minimized
-                        let offset = wm.work_area_offset;
-                        for monitor in wm.monitors_mut() {
-                            let focused_workspace_idx = monitor.focused_workspace_idx();
-
-                            for (idx, workspace) in monitor.workspaces_mut().iter_mut().enumerate()
-                            {
-                                let is_focused_workspace = idx == focused_workspace_idx;
-
-                                if is_focused_workspace {
-                                    // Restore containers
-                                    for container in workspace.containers_mut() {
-                                        if let Some(window) = container.focused_window()
-                                            && WindowsApi::is_window(window.hwnd)
-                                        {
-                                            tracing::debug!(
-                                                "restoring window after transient removal: {}",
-                                                window.hwnd
-                                            );
-                                            WindowsApi::restore_window(window.hwnd);
-                                        } else if let Some(window) = container.focused_window() {
-                                            tracing::debug!(
-                                                "skipping restore of invalid window: {}",
-                                                window.hwnd
-                                            );
-                                        }
-                                    }
-
-                                    // Restore maximized window
-                                    if let Some(window) = &workspace.maximized_window
-                                        && WindowsApi::is_window(window.hwnd)
-                                    {
-                                        WindowsApi::restore_window(window.hwnd);
-                                    }
-
-                                    // Restore monocle container
-                                    if let Some(container) = &workspace.monocle_container
-                                        && let Some(window) = container.focused_window()
-                                        && WindowsApi::is_window(window.hwnd)
-                                    {
-                                        WindowsApi::restore_window(window.hwnd);
-                                    }
-
-                                    // Restore floating windows
-                                    for window in workspace.floating_windows() {
-                                        if WindowsApi::is_window(window.hwnd) {
-                                            WindowsApi::restore_window(window.hwnd);
-                                        }
-                                    }
-                                }
-                            }
-
-                            monitor.update_focused_workspace(offset)?;
-                        }
-
-                        border_manager::send_notification(None);
-                        continue 'receiver;
-                    }
-
-                    // If monitors are still missing, proceed with actual removal logic
-                    tracing::info!(
-                        "verified monitor removal ({initial_monitor_count} vs {}), removing disconnected monitors",
-                        re_queried_devices.len()
-                    );
-
-                    // Re-acquire locks for removal processing
-                    wm = wm_arc.lock();
-                    monitor_cache = MONITOR_CACHE
-                        .get_or_init(|| Mutex::new(HashMap::new()))
-                        .lock();
-
-                    // Make sure that in our state any attached displays have the latest Win32 data
-                    // We must do this again because we dropped the lock and are working with new data
-                    for monitor in wm.monitors_mut() {
-                        for attached in &re_queried_devices {
-                            let serial_number_ids_match =
-                                if let (Some(attached_snid), Some(m_snid)) =
-                                    (&attached.serial_number_id, &monitor.serial_number_id)
-                                {
-                                    attached_snid.eq(m_snid)
-                                } else {
-                                    false
-                                };
-
-                            if serial_number_ids_match || attached.device_id.eq(&monitor.device_id)
-                            {
-                                monitor.id = attached.id;
-                                monitor.device = attached.device.clone();
-                                monitor.device_id = attached.device_id.clone();
-                                monitor.serial_number_id = attached.serial_number_id.clone();
-                                monitor.name = attached.name.clone();
-                                monitor.size = attached.size;
-                                monitor.work_area_size = attached.work_area_size;
-                            }
-                        }
-                    }
-
-                    // Use re-queried devices for remaining logic
-                    re_queried_devices
-                } else {
-                    attached_devices
-                };
-
-                if initial_monitor_count > attached_devices.len() {
-                    tracing::info!("removing disconnected monitors");
-
-                    // Windows to remove from `known_hwnds`
-                    let mut windows_to_remove = Vec::new();
-
-                    // Collect the ids in our state which aren't in the current attached display ids
-                    // These are monitors that have been removed
-                    let mut newly_removed_displays = vec![];
-
-                    for (m_idx, m) in wm.monitors().iter().enumerate() {
-                        if !attached_devices.iter().any(|attached| {
-                            attached.serial_number_id.eq(&m.serial_number_id)
-                                || attached.device_id.eq(&m.device_id)
-                        }) {
-                            let id = m
-                                .serial_number_id
-                                .as_ref()
-                                .map_or(m.device_id.clone(), |sn| sn.clone());
-
-                            newly_removed_displays.push(id.clone());
-
-                            let focused_workspace_idx = m.focused_workspace_idx();
-
-                            for (idx, workspace) in m.workspaces().iter().enumerate() {
-                                let is_focused_workspace = idx == focused_workspace_idx;
-                                let focused_container_idx = workspace.focused_container_idx();
-                                for (c_idx, container) in workspace.containers().iter().enumerate()
-                                {
-                                    let focused_window_idx = container.focused_window_idx();
-                                    for (w_idx, window) in container.windows().iter().enumerate() {
-                                        windows_to_remove.push(window.hwnd);
-                                        if is_focused_workspace
-                                            && c_idx == focused_container_idx
-                                            && w_idx == focused_window_idx
-                                        {
-                                            // Minimize the focused window since Windows might try
-                                            // to move it to another monitor if it was focused.
-                                            if window.is_focused() {
-                                                window.minimize();
-                                            }
-                                        }
-                                    }
-                                }
-
-                                if let Some(maximized) = &workspace.maximized_window {
-                                    windows_to_remove.push(maximized.hwnd);
-                                    // Minimize the focused window since Windows might try
-                                    // to move it to another monitor if it was focused.
-                                    if maximized.is_focused() {
-                                        maximized.minimize();
-                                    }
-                                }
-
-                                if let Some(container) = &workspace.monocle_container {
-                                    for window in container.windows() {
-                                        windows_to_remove.push(window.hwnd);
-                                    }
-                                    if let Some(window) = container.focused_window() {
-                                        // Minimize the focused window since Windows might try
-                                        // to move it to another monitor if it was focused.
-                                        if window.is_focused() {
-                                            window.minimize();
-                                        }
-                                    }
-                                }
-
-                                for window in workspace.floating_windows() {
-                                    windows_to_remove.push(window.hwnd);
-                                    // Minimize the focused window since Windows might try
-                                    // to move it to another monitor if it was focused.
-                                    if window.is_focused() {
-                                        window.minimize();
-                                    }
-                                }
-                            }
-
-                            // Remove any workspace_rules for this specific monitor
-                            let mut workspace_rules = WORKSPACE_MATCHING_RULES.lock();
-                            let mut rules_to_remove = Vec::new();
-                            for (i, rule) in workspace_rules.iter().enumerate().rev() {
-                                if rule.monitor_index == m_idx {
-                                    rules_to_remove.push(i);
-                                }
-                            }
-                            for i in rules_to_remove {
-                                workspace_rules.remove(i);
-                            }
-
-                            // Let's add their state to the cache for later, make sure to use what
-                            // the user set as preference as the id.
-                            let dip = DISPLAY_INDEX_PREFERENCES.read();
-                            let mut dip_ids = dip.values();
-                            let preferred_id = if dip_ids.any(|id| id.eq(&m.device_id)) {
-                                m.device_id.clone()
-                            } else if dip_ids.any(|id| Some(id) == m.serial_number_id.as_ref()) {
-                                m.serial_number_id.clone().unwrap_or_default()
-                            } else {
-                                id
-                            };
-                            monitor_cache.insert(preferred_id, m.clone());
-                        }
-                    }
-
-                    // Update known_hwnds
-                    wm.known_hwnds.retain(|i, _| !windows_to_remove.contains(i));
-
-                    if !newly_removed_displays.is_empty() {
-                        // After we have cached them, remove them from our state
-                        wm.monitors_mut().retain(|m| {
-                            !newly_removed_displays.iter().any(|id| {
-                                m.serial_number_id.as_ref().is_some_and(|sn| sn == id)
-                                    || m.device_id.eq(id)
-                            })
-                        });
-                    }
-
-                    let post_removal_monitor_count = wm.monitors().len();
-                    let focused_monitor_idx = wm.focused_monitor_idx();
-                    if focused_monitor_idx >= post_removal_monitor_count {
-                        wm.focus_monitor(0)?;
-                    }
-
-                    let offset = wm.work_area_offset;
-
-                    for monitor in wm.monitors_mut() {
-                        // If we have lost a monitor, update everything to filter out any jank
-                        if initial_monitor_count != post_removal_monitor_count {
-                            monitor.update_focused_workspace(offset)?;
-                        }
-                    }
-                }
-
-                let post_removal_monitor_count = wm.monitors().len();
-
-                // This is the list of device ids after we have removed detached displays. We can
-                // keep this with just the device_ids without the serial numbers since this is used
-                // only to check which one is the newly added monitor below if there is a new
-                // monitor. Everything done after with said new monitor will again consider both
-                // serial number and device ids.
-                let post_removal_device_ids = wm
+                if wm
                     .monitors()
                     .iter()
-                    .map(|m| &m.device_id)
-                    .cloned()
-                    .collect::<Vec<_>>();
-
-                // Check for and add any new monitors that may have been plugged in
-                // Monitor and display index preferences get applied in this function
-                WindowsApi::load_monitor_information(&mut wm)?;
-
-                let post_addition_monitor_count = wm.monitors().len();
-
-                if post_addition_monitor_count > post_removal_monitor_count {
-                    tracing::info!(
-                        "monitor count mismatch ({post_removal_monitor_count} vs {post_addition_monitor_count}), adding connected monitors",
-                    );
-
-                    let known_hwnds = wm.known_hwnds.clone();
-                    let offset = wm.work_area_offset;
-                    let mouse_follows_focus = wm.mouse_follows_focus;
-                    let focused_monitor_idx = wm.focused_monitor_idx();
-                    let focused_workspace_idx = wm.focused_workspace_idx()?;
-
-                    // Look in the updated state for new monitors
-                    for (i, m) in wm.monitors_mut().iter_mut().enumerate() {
-                        let device_id = &m.device_id;
-                        // We identify a new monitor when we encounter a new device id
-                        if !post_removal_device_ids.contains(device_id) {
-                            let mut cache_hit = false;
-                            let mut cached_id = String::new();
-                            // Check if that device id exists in the cache for this session
-                            if let Some((id, cached)) = monitor_cache.get_key_value(device_id).or(m
-                                .serial_number_id
-                                .as_ref()
-                                .and_then(|sn| monitor_cache.get_key_value(sn)))
-                            {
-                                cache_hit = true;
-                                cached_id = id.clone();
-
-                                tracing::info!(
-                                    "found monitor and workspace configuration for {id} in the monitor cache, applying"
-                                );
-
-                                // If it does, update the cached monitor info with the new one and
-                                // load the cached monitor removing any window that has since been
-                                // closed or moved to another workspace
-                                *m = Monitor {
-                                    // Data that should be the one just read from `win32-display-data`
-                                    id: m.id,
-                                    name: m.name.clone(),
-                                    device: m.device.clone(),
-                                    device_id: m.device_id.clone(),
-                                    serial_number_id: m.serial_number_id.clone(),
-                                    size: m.size,
-                                    work_area_size: m.work_area_size,
-
-                                    // The rest should come from the cached monitor
-                                    work_area_offset: cached.work_area_offset,
-                                    window_based_work_area_offset: cached
-                                        .window_based_work_area_offset,
-                                    window_based_work_area_offset_limit: cached
-                                        .window_based_work_area_offset_limit,
-                                    workspaces: cached.workspaces.clone(),
-                                    last_focused_workspace: cached.last_focused_workspace,
-                                    workspace_names: cached.workspace_names.clone(),
-                                    container_padding: cached.container_padding,
-                                    workspace_padding: cached.workspace_padding,
-                                    wallpaper: cached.wallpaper.clone(),
-                                    floating_layer_behaviour: cached.floating_layer_behaviour,
-                                };
-
-                                let focused_workspace_idx = m.focused_workspace_idx();
-
-                                for (j, workspace) in m.workspaces_mut().iter_mut().enumerate() {
-                                    // If this is the focused workspace we need to show (restore) all
-                                    // windows that were visible since they were probably minimized by
-                                    // Windows.
-                                    let is_focused_workspace = j == focused_workspace_idx;
-                                    let focused_container_idx = workspace.focused_container_idx();
-
-                                    let mut empty_containers = Vec::new();
-                                    for (idx, container) in
-                                        workspace.containers_mut().iter_mut().enumerate()
-                                    {
-                                        container.windows_mut().retain(|window| {
-                                            window.exe().is_ok()
-                                                && !known_hwnds.contains_key(&window.hwnd)
-                                        });
-
-                                        if container.windows().is_empty() {
-                                            empty_containers.push(idx);
-                                        }
-
-                                        if is_focused_workspace {
-                                            if let Some(window) = container.focused_window()
-                                                && WindowsApi::is_window(window.hwnd)
-                                            {
-                                                tracing::debug!(
-                                                    "restoring window: {}",
-                                                    window.hwnd
-                                                );
-                                                WindowsApi::restore_window(window.hwnd);
-                                            } else {
-                                                // If the focused window was moved or removed by
-                                                // the user after the disconnect then focus the
-                                                // first window and show that one
-                                                container.focus_window(0);
-
-                                                if let Some(window) = container.focused_window()
-                                                    && WindowsApi::is_window(window.hwnd)
-                                                {
-                                                    WindowsApi::restore_window(window.hwnd);
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // Remove empty containers
-                                    for empty_idx in empty_containers {
-                                        if empty_idx == focused_container_idx {
-                                            workspace.remove_container(empty_idx);
-                                        } else {
-                                            workspace.remove_container_by_idx(empty_idx);
-                                        }
-                                    }
-
-                                    if let Some(window) = &workspace.maximized_window {
-                                        if window.exe().is_err()
-                                            || known_hwnds.contains_key(&window.hwnd)
-                                        {
-                                            workspace.maximized_window = None;
-                                        } else if is_focused_workspace
-                                            && WindowsApi::is_window(window.hwnd)
-                                        {
-                                            WindowsApi::restore_window(window.hwnd);
-                                        }
-                                    }
-
-                                    if let Some(container) = &mut workspace.monocle_container {
-                                        container.windows_mut().retain(|window| {
-                                            window.exe().is_ok()
-                                                && !known_hwnds.contains_key(&window.hwnd)
-                                        });
-
-                                        if container.windows().is_empty() {
-                                            workspace.monocle_container = None;
-                                        } else if is_focused_workspace {
-                                            if let Some(window) = container.focused_window()
-                                                && WindowsApi::is_window(window.hwnd)
-                                            {
-                                                WindowsApi::restore_window(window.hwnd);
-                                            } else {
-                                                // If the focused window was moved or removed by
-                                                // the user after the disconnect then focus the
-                                                // first window and show that one
-                                                container.focus_window(0);
-
-                                                if let Some(window) = container.focused_window()
-                                                    && WindowsApi::is_window(window.hwnd)
-                                                {
-                                                    WindowsApi::restore_window(window.hwnd);
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    workspace.floating_windows_mut().retain(|window| {
-                                        window.exe().is_ok()
-                                            && !known_hwnds.contains_key(&window.hwnd)
-                                    });
-
-                                    if is_focused_workspace {
-                                        for window in workspace.floating_windows() {
-                                            if WindowsApi::is_window(window.hwnd) {
-                                                WindowsApi::restore_window(window.hwnd);
-                                            }
-                                        }
-                                    }
-
-                                    // Apply workspace rules
-                                    let mut workspace_matching_rules =
-                                        WORKSPACE_MATCHING_RULES.lock();
-                                    if let Some(rules) = workspace
-                                        .workspace_config
-                                        .as_ref()
-                                        .and_then(|c| c.workspace_rules.as_ref())
-                                    {
-                                        for r in rules {
-                                            workspace_matching_rules.push(WorkspaceMatchingRule {
-                                                monitor_index: i,
-                                                workspace_index: j,
-                                                matching_rule: r.clone(),
-                                                initial_only: false,
-                                            });
-                                        }
-                                    }
-
-                                    if let Some(rules) = workspace
-                                        .workspace_config
-                                        .as_ref()
-                                        .and_then(|c| c.initial_workspace_rules.as_ref())
-                                    {
-                                        for r in rules {
-                                            workspace_matching_rules.push(WorkspaceMatchingRule {
-                                                monitor_index: i,
-                                                workspace_index: j,
-                                                matching_rule: r.clone(),
-                                                initial_only: true,
-                                            });
-                                        }
-                                    }
-                                }
-
-                                // Restore windows from new monitor and update the focused
-                                // workspace
-                                m.load_focused_workspace(mouse_follows_focus)?;
-                                m.update_focused_workspace(offset)?;
-                            }
-
-                            // Entries in the cache should only be used once; remove the entry there was a cache hit
-                            if cache_hit && !cached_id.is_empty() {
-                                monitor_cache.remove(&cached_id);
-                            }
-                        }
+                    .any(|m| !attached.iter().any(|a| same_device(m, a)))
+                {
+                    // Keep the existing grace period for transient disconnects without
+                    // holding WM/cache locks or minimizing any application.
+                    drop(wm);
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    attached = attached_display_devices(display_provider)?;
+                    wm = wm_arc.lock();
+                    if attached.is_empty() {
+                        continue 'receiver;
                     }
-
-                    // Refocus the previously focused monitor since the code above might
-                    // steal the focus away.
-                    wm.focus_monitor(focused_monitor_idx)?;
-                    wm.focus_workspace(focused_workspace_idx)?;
                 }
-
-                let final_count = wm.monitors().len();
-
-                if post_removal_monitor_count != final_count {
-                    wm.retile_all(true)?;
-                    // Second retile to fix DPI/resolution related jank
-                    wm.retile_all(true)?;
-                    // Border updates to fix DPI/resolution related jank
-                    border_manager::send_notification(None);
-                }
+                let mut cache = MONITOR_CACHE
+                    .get_or_init(|| Mutex::new(HashMap::new()))
+                    .lock();
+                reconcile_attached_monitors(&mut wm, attached, &mut cache)?;
             }
         }
 
@@ -981,6 +426,200 @@ where
         )?;
     }
 
+    Ok(())
+}
+
+pub(crate) fn same_device(a: &Monitor, b: &Monitor) -> bool {
+    a.serial_number_id
+        .as_ref()
+        .filter(|id| !id.is_empty())
+        .is_some_and(|id| b.serial_number_id.as_ref() == Some(id))
+        || (!a.device_id.is_empty() && a.device_id != "UNKNOWN" && a.device_id == b.device_id)
+        || (a.device_id == "UNKNOWN" && b.device_id == "UNKNOWN" && a.id == b.id)
+}
+
+/// Reconcile a complete physical monitor snapshot while native desktops own membership.
+pub(crate) fn reconcile_attached_monitors(
+    wm: &mut WindowManager,
+    attached: Vec<Monitor>,
+    cache: &mut HashMap<String, Monitor>,
+) -> color_eyre::Result<()> {
+    use color_eyre::eyre::OptionExt;
+    if attached.is_empty() {
+        color_eyre::eyre::bail!("refusing an empty monitor snapshot");
+    }
+    let handles = attached
+        .iter()
+        .map(|m| m.id)
+        .collect::<std::collections::HashSet<_>>();
+    if handles.len() != attached.len() {
+        color_eyre::eyre::bail!("duplicate monitor handles in snapshot");
+    }
+    wm.sync_desktop_count()?;
+    let previous = State::from(wm.as_ref());
+    let old_ids = wm.desktop_ids.clone();
+    let old_count = wm.desktop_count;
+    let old_focus = wm.focused_desktop_idx;
+    let old_names = wm.workspace_names.clone();
+    let old_map = wm.monitor_usr_idx_map.clone();
+    let focused = wm.focused_monitor().cloned();
+    let mut next_cache = cache.clone();
+    for monitor in wm.monitors() {
+        if !attached.iter().any(|a| same_device(monitor, a)) {
+            let preferred = DISPLAY_INDEX_PREFERENCES
+                .read()
+                .values()
+                .find(|id| {
+                    **id == monitor.device_id || monitor.serial_number_id.as_ref() == Some(*id)
+                })
+                .cloned()
+                .unwrap_or_else(|| {
+                    monitor
+                        .serial_number_id
+                        .clone()
+                        .unwrap_or_else(|| monitor.device_id.clone())
+                });
+            next_cache.insert(preferred, monitor.clone());
+        }
+    }
+    let mut ordered = std::collections::BTreeMap::new();
+    let mut unpreferred = Vec::new();
+    for metadata in attached {
+        let existing = wm
+            .monitors()
+            .iter()
+            .find(|m| same_device(m, &metadata))
+            .cloned();
+        let cached_key = next_cache
+            .keys()
+            .find(|id| {
+                **id == metadata.device_id || metadata.serial_number_id.as_ref() == Some(*id)
+            })
+            .cloned();
+        let mut monitor = existing
+            .clone()
+            .or_else(|| {
+                cached_key
+                    .as_ref()
+                    .and_then(|key| next_cache.get(key).cloned())
+            })
+            .unwrap_or_else(|| metadata.clone());
+        if existing.is_none() {
+            // The current association takes precedence over stale windows in a cache.
+            for workspace in monitor.workspaces_mut() {
+                for hwnd in WindowManager::workspace_hwnds(workspace) {
+                    if wm.known_hwnds.contains_key(&hwnd) {
+                        workspace.detach_window_for_desktop_move(hwnd);
+                    }
+                }
+            }
+        }
+        monitor.id = metadata.id;
+        monitor.name = metadata.name;
+        monitor.device = metadata.device;
+        monitor.device_id = metadata.device_id;
+        monitor.serial_number_id = metadata.serial_number_id;
+        monitor.size = metadata.size;
+        monitor.work_area_size = metadata.work_area_size;
+        if let Some(key) = cached_key {
+            next_cache.remove(&key);
+        }
+        let preference = DISPLAY_INDEX_PREFERENCES
+            .read()
+            .iter()
+            .find_map(|(&i, id)| {
+                (monitor.device_id == *id || monitor.serial_number_id.as_ref() == Some(id))
+                    .then_some(i)
+            })
+            .or_else(|| {
+                crate::MONITOR_INDEX_PREFERENCES
+                    .lock()
+                    .iter()
+                    .find_map(|(&i, area)| (*area == monitor.size).then_some(i))
+            });
+        if let Some(i) = preference
+            && !ordered.contains_key(&i)
+        {
+            ordered.insert(i, monitor);
+        } else {
+            unpreferred.push(monitor);
+        }
+    }
+    for monitor in unpreferred {
+        let idx = (0..)
+            .find(|i| !ordered.contains_key(i))
+            .ok_or_eyre("no free monitor index")?;
+        ordered.insert(idx, monitor);
+    }
+    wm.monitor_usr_idx_map = ordered
+        .keys()
+        .enumerate()
+        .map(|(physical, &user)| (user, physical))
+        .collect();
+    *wm.monitors_mut() = ordered.into_values().collect();
+    let selected = focused
+        .as_ref()
+        .and_then(|old| wm.monitors().iter().position(|m| same_device(old, m)))
+        .unwrap_or(0);
+    wm.focus_monitor(selected)?;
+    let result = wm
+        .sync_desktop_count()
+        .and_then(|_| wm.preserve_windows_after_monitor_change(&previous));
+    if let Err(error) = result {
+        wm.monitors = previous.monitors;
+        wm.monitor_usr_idx_map = old_map;
+        wm.desktop_ids = old_ids;
+        wm.desktop_count = old_count;
+        wm.focused_desktop_idx = old_focus;
+        wm.workspace_names = old_names;
+        wm.update_known_hwnds();
+        return Err(error);
+    }
+    // Preserve external rules for surviving physical monitors, remapping their indices.
+    let mut rules = WORKSPACE_MATCHING_RULES.lock();
+    rules.retain_mut(|rule| {
+        let target = previous
+            .monitors
+            .elements()
+            .get(rule.monitor_index)
+            .and_then(|old| wm.monitors().iter().position(|m| same_device(old, m)));
+        if let Some(index) = target
+            && rule.workspace_index < wm.desktop_count
+        {
+            rule.monitor_index = index;
+            true
+        } else {
+            false
+        }
+    });
+    for (m, monitor) in wm.monitors().iter().enumerate() {
+        for (d, workspace) in monitor.workspaces().iter().enumerate() {
+            if let Some(config) = &workspace.workspace_config {
+                for (initial, matching) in [
+                    (false, config.workspace_rules.as_ref()),
+                    (true, config.initial_workspace_rules.as_ref()),
+                ] {
+                    if let Some(matching) = matching {
+                        for matching_rule in matching {
+                            let rule = WorkspaceMatchingRule {
+                                monitor_index: m,
+                                workspace_index: d,
+                                matching_rule: matching_rule.clone(),
+                                initial_only: initial,
+                            };
+                            if !rules.contains(&rule) {
+                                rules.push(rule);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    drop(rules);
+    *cache = next_cache;
+    wm.update_known_hwnds();
+    border_manager::send_notification(None);
     Ok(())
 }
 
@@ -1052,13 +691,14 @@ mod tests {
         let socket_path = PathBuf::from(socket_name);
 
         // Create a new WindowManager instance
-        let wm = match WindowManager::new(receiver, Some(socket_path.clone())) {
+        let mut wm = match WindowManager::new(receiver, Some(socket_path.clone())) {
             Ok(manager) => manager,
             Err(e) => {
                 panic!("Failed to create WindowManager: {e}");
             }
         };
 
+        wm.native_desktop_workspaces = true;
         (
             wm,
             TestContext {
@@ -1194,28 +834,25 @@ mod tests {
 
     #[test]
     fn test_listen_for_notifications() {
-        // Create a WindowManager instance for testing
         let (wm, _test_context) = setup_window_manager();
-
-        // Start the notification listener
-        let result = listen_for_notifications(Arc::new(Mutex::new(wm)));
-
-        // Check if the listener started successfully
-        assert!(result.is_ok(), "Failed to start notification listener");
-
-        // Test sending a notification
-        send_notification(MonitorNotification::DisplayConnectionChange);
-
-        // Receive the notification from the channel
-        let received = event_rx().try_recv();
-
-        // Check if we received the notification and if it matches what we sent
-        match received {
-            Ok(notification) => {
-                assert_eq!(notification, MonitorNotification::DisplayConnectionChange);
-            }
-            Err(e) => panic!("Failed to receive MonitorNotification: {e}"),
+        let (sender, receiver) = crossbeam_channel::bounded(1);
+        let listener = std::thread::spawn(move || {
+            handle_notifications_from(
+                Arc::new(Mutex::new(wm)),
+                std::iter::empty::<Result<win32_display_data::Device, win32_display_data::Error>>,
+                receiver,
+            )
+        });
+        // The active test listener must not consume any message from the production channel.
+        for _ in 0..20 {
+            test_send_notification();
         }
+        // Disconnecting the private channel must stop the loop and release the WM.
+        drop(sender);
+        listener
+            .join()
+            .expect("listener panicked")
+            .expect("listener failed");
     }
 
     #[test]

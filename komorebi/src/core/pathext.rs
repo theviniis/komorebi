@@ -167,9 +167,7 @@ mod tests {
     #[test]
     fn resolves_env_vars() {
         // Set a variable for testing
-        unsafe {
-            std::env::set_var("VAR", "VALUE");
-        }
+        let _var_guard = crate::TestEnvGuard::set("VAR", "VALUE");
 
         // %VAR% format
         assert_eq!(resolve("/path/%VAR%/d"), expected("/path/VALUE/d"));
@@ -187,9 +185,7 @@ mod tests {
         assert_eq!(resolve("/path/$ASD/to/d"), expected("/path/$ASD/to/d"));
 
         // Set a $env:USERPROFILE variable for testing
-        unsafe {
-            std::env::set_var("USERPROFILE", "C:\\Users\\user");
-        }
+        let _profile_guard = crate::TestEnvGuard::set("USERPROFILE", "C:\\Users\\user");
 
         // ~ and $HOME should be replaced with $Env:USERPROFILE
         assert_eq!(resolve("~"), expected("C:\\Users\\user"));

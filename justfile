@@ -84,6 +84,8 @@ docgen starlight:
 jsonschema:
     cargo run --package komorebic -- static-config-schema > schema.json
     cargo run --package komorebic -- application-specific-configuration-schema > schema.asc.json
+    cargo run --package komorebic -- notification-schema > schema.notification.json
+    cargo run --package komorebic -- socket-schema > schema.socket.json
     cargo run --package komorebi-bar -- --schema > schema.bar.json
 
 version := `cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "komorebi") | .version'`

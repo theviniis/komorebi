@@ -826,10 +826,28 @@ impl MonitorInfo {
 
         let monitor = &state.monitors.elements()[self.monitor_index];
         self.work_area_offset = monitor.work_area_offset;
-        self.focused_workspace_idx = Some(monitor.focused_workspace_idx());
+        let focused_idx = if state.native_desktop_workspaces {
+            state.focused_desktop_idx
+        } else {
+            monitor.focused_workspace_idx()
+        };
+        let workspace_count = if state.native_desktop_workspaces {
+            state.desktop_count
+        } else {
+            monitor.workspaces().len()
+        };
+        let Some(focused_ws) = monitor
+            .workspaces()
+            .get(focused_idx)
+            .filter(|_| focused_idx < workspace_count)
+        else {
+            self.focused_workspace_idx = None;
+            self.workspaces.clear();
+            return;
+        };
+        self.focused_workspace_idx = Some(focused_idx);
 
-        // Layout
-        let focused_ws = &monitor.workspaces()[monitor.focused_workspace_idx()];
+        // Layout follows the global native desktop, not a stale per-monitor ring.
         self.layout = Self::resolve_layout(focused_ws, state.is_paused);
 
         self.workspaces.clear();
@@ -837,7 +855,11 @@ impl MonitorInfo {
             self.show_all_icons,
             self.hide_empty_workspaces,
             self.focused_workspace_idx,
-            monitor.workspaces().iter().enumerate(),
+            monitor
+                .workspaces()
+                .iter()
+                .take(workspace_count)
+                .enumerate(),
         ));
     }
 
@@ -1021,5 +1043,88 @@ impl From<&Window> for WindowInfo {
                     .or_else(|| windows_icons_fallback::get_icon_by_process_id(value.process_id()))
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod native_desktop_tests {
+    use super::*;
+    use komorebi_client::{Monitor, Ring};
+    fn state() -> State {
+        let mut monitor = Monitor::new(
+            0,
+            Rect::default(),
+            Rect::default(),
+            "Display".into(),
+            "Device".into(),
+            "DeviceId".into(),
+            None,
+        );
+        monitor.sync_workspace_count(2);
+        monitor.workspaces_mut()[1].layout =
+            komorebi_client::Layout::Default(komorebi_client::DefaultLayout::Columns);
+        let mut monitors = Ring::default();
+        monitors.elements_mut().push_back(monitor.clone());
+        monitor.id = 7;
+        monitors.elements_mut().push_back(monitor);
+        State {
+            monitors,
+            monitor_usr_idx_map: HashMap::new(),
+            is_paused: false,
+            resize_delta: 50,
+            new_window_behaviour: Default::default(),
+            float_override: false,
+            cross_monitor_move_behaviour: Default::default(),
+            monocle_focus_behaviour: Default::default(),
+            unmanaged_window_operation_behaviour: Default::default(),
+            work_area_offset: None,
+            focus_follows_mouse: None,
+            mouse_follows_focus: true,
+            has_pending_raise_op: false,
+            native_desktop_workspaces: true,
+            focused_desktop_idx: 1,
+            desktop_count: 2,
+        }
+    }
+    #[test]
+    fn traditional_bar_uses_each_monitors_focus_and_workspace_count() {
+        let mut state = state();
+        state.native_desktop_workspaces = false;
+        state.focused_desktop_idx = 99;
+        state.desktop_count = 99;
+        state.monitors.elements_mut()[0].focus_workspace(0).unwrap();
+        state.monitors.elements_mut()[1]
+            .workspaces_mut()
+            .push_back(Workspace::default());
+        state.monitors.elements_mut()[1].focus_workspace(2).unwrap();
+        for (m, focus, count) in [(0, 0, 2), (1, 2, 3)] {
+            let mut info = MonitorInfo::default();
+            info.update(Some(m), state.clone(), false);
+            assert_eq!(info.focused_workspace_idx, Some(focus));
+            assert_eq!(info.workspaces.len(), count);
+        }
+    }
+
+    #[test]
+    fn bar_uses_global_native_focus_on_every_monitor_even_with_stale_rings() {
+        for m in 0..2 {
+            let mut info = MonitorInfo::default();
+            info.update(Some(m), state(), false);
+            assert_eq!(info.focused_workspace_idx, Some(1));
+            assert_eq!(info.workspaces.len(), 2);
+            assert!(matches!(
+                info.layout,
+                KomorebiLayout::Default(komorebi_client::DefaultLayout::Columns)
+            ));
+        }
+    }
+    #[test]
+    fn bar_handles_incomplete_workspace_state_without_indexing_outside_the_ring() {
+        let mut state = state();
+        state.monitors.elements_mut()[1].workspaces_mut().clear();
+        let mut info = MonitorInfo::default();
+        info.update(Some(1), state, false);
+        assert!(info.focused_workspace_idx.is_none());
+        assert!(info.workspaces.is_empty());
     }
 }

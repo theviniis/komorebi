@@ -1,0 +1,348 @@
+$ cargo test -p komorebi --lib monitor_reconciliator::tests::test_send_notification -- --exact --test-threads=1
+
+running 1 test
+test monitor_reconciliator::tests::test_send_notification ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 125 filtered out; finished in 0.00s
+
+   Compiling komorebi v0.1.42 (C:\Users\thevi\AppData\Local\Temp\komorebi-stage1-baseline-y6m95ubb\komorebi)
+   Compiling komorebi-layouts v0.1.42 (C:\Users\thevi\AppData\Local\Temp\komorebi-stage1-baseline-y6m95ubb\komorebi-layouts)
+   Compiling komorebi-themes v0.1.42 (C:\Users\thevi\AppData\Local\Temp\komorebi-stage1-baseline-y6m95ubb\komorebi-themes)
+warning: unused import: `std::sync::atomic::Ordering`
+  --> komorebi\src\lib.rs:52:5
+   |
+52 | use std::sync::atomic::Ordering;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `wm`
+   --> komorebi\src\border_manager\mod.rs:181:43
+    |
+181 | pub fn redraw_borders_for_focused_desktop(wm: &WindowManager) -> color_eyre::Result<()> {
+    |                                           ^^ help: if this is intentional, prefix it with an underscore: `_wm`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `focused_desktop_idx`
+   --> komorebi\src\reaper.rs:180:13
+    |
+180 |         let focused_desktop_idx = wm.lock().focused_desktop_idx;
+    |             ^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_focused_desktop_idx`
+
+warning: unused `Result` that must be used
+    --> komorebi\src\process_command.rs:2286:17
+     |
+2286 |                 self.apply_state(state.clone());
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+     = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+     |
+2286 |                 let _ = self.apply_state(state.clone());
+     |                 +++++++
+
+warning: `komorebi` (lib test) generated 4 warnings (run `cargo fix --lib -p komorebi --tests` to apply 3 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.72s
+warning: the following packages contain code that will be rejected by a future version of Rust: net2 v0.2.39
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src\lib.rs (C:\Users\thevi\.local\share\opencode\worktree\dd874b\native-desktop-workspaces\target\debug\deps\komorebi-75970987be5f19ec.exe)
+
+EXIT 0
+$ cargo test -p komorebi --lib state::tests::serialized_global_state_has_no_legacy_virtual_desktop_field -- --exact --test-threads=1
+
+running 1 test
+test state::tests::serialized_global_state_has_no_legacy_virtual_desktop_field ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 125 filtered out; finished in 0.00s
+
+warning: unused import: `std::sync::atomic::Ordering`
+  --> komorebi\src\lib.rs:52:5
+   |
+52 | use std::sync::atomic::Ordering;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `wm`
+   --> komorebi\src\border_manager\mod.rs:181:43
+    |
+181 | pub fn redraw_borders_for_focused_desktop(wm: &WindowManager) -> color_eyre::Result<()> {
+    |                                           ^^ help: if this is intentional, prefix it with an underscore: `_wm`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `focused_desktop_idx`
+   --> komorebi\src\reaper.rs:180:13
+    |
+180 |         let focused_desktop_idx = wm.lock().focused_desktop_idx;
+    |             ^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_focused_desktop_idx`
+
+warning: unused `Result` that must be used
+    --> komorebi\src\process_command.rs:2286:17
+     |
+2286 |                 self.apply_state(state.clone());
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+     = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+     |
+2286 |                 let _ = self.apply_state(state.clone());
+     |                 +++++++
+
+warning: `komorebi` (lib test) generated 4 warnings (run `cargo fix --lib -p komorebi --tests` to apply 3 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.98s
+warning: the following packages contain code that will be rejected by a future version of Rust: net2 v0.2.39
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src\lib.rs (C:\Users\thevi\.local\share\opencode\worktree\dd874b\native-desktop-workspaces\target\debug\deps\komorebi-75970987be5f19ec.exe)
+
+EXIT 0
+$ cargo test -p komorebi --lib window_manager::tests::move_container_moves_every_window_to_target_desktop -- --exact --test-threads=1
+
+running 1 test
+test window_manager::tests::move_container_moves_every_window_to_target_desktop ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 125 filtered out; finished in 0.01s
+
+warning: unused import: `std::sync::atomic::Ordering`
+  --> komorebi\src\lib.rs:52:5
+   |
+52 | use std::sync::atomic::Ordering;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `wm`
+   --> komorebi\src\border_manager\mod.rs:181:43
+    |
+181 | pub fn redraw_borders_for_focused_desktop(wm: &WindowManager) -> color_eyre::Result<()> {
+    |                                           ^^ help: if this is intentional, prefix it with an underscore: `_wm`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `focused_desktop_idx`
+   --> komorebi\src\reaper.rs:180:13
+    |
+180 |         let focused_desktop_idx = wm.lock().focused_desktop_idx;
+    |             ^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_focused_desktop_idx`
+
+warning: unused `Result` that must be used
+    --> komorebi\src\process_command.rs:2286:17
+     |
+2286 |                 self.apply_state(state.clone());
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+     = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+     |
+2286 |                 let _ = self.apply_state(state.clone());
+     |                 +++++++
+
+warning: `komorebi` (lib test) generated 4 warnings (run `cargo fix --lib -p komorebi --tests` to apply 3 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.79s
+warning: the following packages contain code that will be rejected by a future version of Rust: net2 v0.2.39
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src\lib.rs (C:\Users\thevi\.local\share\opencode\worktree\dd874b\native-desktop-workspaces\target\debug\deps\komorebi-75970987be5f19ec.exe)
+
+EXIT 0
+$ cargo test -p komorebi -- --test-threads=1
+
+running 126 tests
+test container::tests::deserializes_with_missing_locked_field_defaults_to_false ... ok
+test container::tests::serializes_and_deserializes ... ok
+test container::tests::test_add_window ... ok
+test container::tests::test_contains_window ... ok
+test container::tests::test_focus_window ... ok
+test container::tests::test_idx_for_window ... ok
+test container::tests::test_remove_focused_window ... ok
+test container::tests::test_remove_window_by_idx ... ok
+test core::pathext::tests::resolves_env_vars ... ok
+test core::tests::deserializes ... ok
+test lockable_sequence::tests::test_insert_respecting_locks ... ok
+test lockable_sequence::tests::test_remove_respecting_locks ... ok
+test lockable_sequence::tests::test_swap_respecting_locks_various_cases ... ok
+test monitor::tests::set_focused_workspace_idx_updates_the_monitor_ring ... ok
+test monitor::tests::sync_workspace_count_grows_and_shrinks_keeping_index_zero ... ok
+test monitor::tests::test_add_container ... ok
+test monitor::tests::test_ensure_workspace_count_only_default_workspace ... ok
+test monitor::tests::test_ensure_workspace_count_workspace_contains_two_workspaces ... ok
+test monitor::tests::test_focus_workspace ... ok
+test monitor::tests::test_move_container_to_nonexistent_workspace ... ok
+test monitor::tests::test_move_container_to_workspace ... ok
+test monitor::tests::test_new_workspace_idx ... ok
+test monitor::tests::test_remove_nonexistent_workspace ... ok
+test monitor::tests::test_remove_workspace_by_idx ... ok
+test monitor::tests::test_remove_workspaces ... ok
+test monitor_reconciliator::tests::test_attached_display_devices ... ok
+test monitor_reconciliator::tests::test_channel_bounded_capacity ... ok
+test monitor_reconciliator::tests::test_insert_in_monitor_cache ... ok
+test monitor_reconciliator::tests::test_insert_two_monitors_cache ... ok
+test monitor_reconciliator::tests::test_listen_for_notifications ... ok
+test monitor_reconciliator::tests::test_send_notification ... ok
+test process_command::tests::test_receive_socket_message ... ok
+test process_event::destroy_focus_tests::defers_when_a_successor_took_the_foreground ... ok
+test process_event::destroy_focus_tests::refocuses_when_foreground_is_null ... ok
+test process_event::destroy_focus_tests::refocuses_when_foreground_is_unavailable ... ok
+test process_event::focus_change_tests::allows_focus_change_for_foreground_window ... ok
+test process_event::focus_change_tests::allows_focus_change_when_foreground_unknown ... ok
+test process_event::focus_change_tests::skips_focus_change_from_background_window ... ok
+test state::tests::serialized_global_state_has_no_legacy_virtual_desktop_field ... FAILED
+test static_config::tests::backwards_compat ... ignored, this fails on github actions due to rate limiting changes introduced in may 2025
+test static_config::tests::deserialize_custom_layout_rules ... ok
+test version_gate::tests::build_floor_is_26100_2605 ... ok
+test virtual_desktop::tests::desktop_events_are_translated_to_kinds ... ok
+test virtual_desktop::tests::desktop_index_conversions_roundtrip ... ok
+test virtual_desktop::tests::fake_backend_records_moves_and_names ... ok
+test virtual_desktop::tests::fake_backend_records_operations ... ok
+test virtual_desktop::tests::fake_backend_rejects_unknown_desktops ... ok
+test virtual_desktop::tests::installed_backend_is_returned_by_backend ... ok
+test window_manager::tests::applying_state_with_fewer_workspaces_than_desktops_keeps_all_desktops ... ok
+test window_manager::tests::applying_state_with_more_workspaces_than_desktops_does_not_lose_windows ... ok
+test window_manager::tests::cloak_from_desktop_transition_does_not_trigger_reconciliation ... ok
+test window_manager::tests::cloak_on_the_focused_desktop_is_still_processed ... ok
+test window_manager::tests::cycle_container_window_in_direction ... ok
+test window_manager::tests::desktop_changed_updates_index_without_switching_back ... ok
+test window_manager::tests::desktop_moved_permutes_workspaces_on_every_monitor ... ok
+test window_manager::tests::focus_desktop_moves_every_monitor_to_the_same_index ... ok
+test window_manager::tests::focus_desktop_rejects_out_of_range_index ... ok
+test window_manager::tests::load_focused_workspace_does_not_hide_other_workspaces ... ok
+test window_manager::tests::move_container_moves_every_window_to_target_desktop ... FAILED
+test window_manager::tests::moving_a_workspace_to_another_monitor_is_rejected ... ok
+test window_manager::tests::new_workspace_is_a_noop ... ok
+test window_manager::tests::switching_desktop_redraws_borders_once ... ok
+test window_manager::tests::sync_desktop_count_keeps_monitors_uniform ... ok
+test window_manager::tests::test_add_window_handle_to_move_based_on_workspace_rule ... ok
+test window_manager::tests::test_create_window_manager ... ok
+test window_manager::tests::test_cycle_container_window_index_in_direction ... ok
+test window_manager::tests::test_cycle_nonexistent_windows ... ok
+test window_manager::tests::test_float_nonexistent_window ... ok
+test window_manager::tests::test_float_window ... ok
+test window_manager::tests::test_focus_container_in_cycle_direction ... ok
+test window_manager::tests::test_focus_workspace ... ok
+test window_manager::tests::test_focused_monitor_size ... ok
+test window_manager::tests::test_maximize_and_unmaximize_window ... ok
+test window_manager::tests::test_monocle_on_and_monocle_off ... ok
+test window_manager::tests::test_monocle_on_and_off_nonexistent_container ... ok
+test window_manager::tests::test_move_workspace_to_monitor ... ok
+test window_manager::tests::test_move_workspace_to_nonexistent_monitor ... ok
+test window_manager::tests::test_remove_focused_workspace ... ok
+test window_manager::tests::test_remove_nonexistent_window_from_container ... ok
+test window_manager::tests::test_remove_window_from_container ... ok
+test window_manager::tests::test_set_workspace_name ... ok
+test window_manager::tests::test_swap_container_with_nonexistent_container ... ok
+test window_manager::tests::test_swap_containers ... ok
+test window_manager::tests::test_swap_monitor_workspaces ... ok
+test window_manager::tests::test_swap_workspace_with_nonexistent_monitor ... ok
+test window_manager::tests::test_switch_focus_monitors ... ok
+test window_manager::tests::test_switch_focus_to_nonexistent_monitor ... ok
+test window_manager::tests::test_toggle_lock ... ok
+test window_manager::tests::test_toggle_maximize ... ok
+test window_manager::tests::test_toggle_maximize_nonexistent_window ... ok
+test window_manager::tests::test_toggle_monocle ... ok
+test window_manager::tests::test_toggle_monocle_nonexistent_container ... ok
+test window_manager::tests::test_toggle_tiling ... ok
+test window_manager::tests::test_transfer_container ... ok
+test window_manager::tests::test_transfer_window ... ok
+test window_manager::tests::test_transfer_window_to_nonexistent_monitor ... ok
+test window_manager::tests::test_workspace_names_synced_from_backend ... ok
+test window_manager::tests::window_born_on_other_desktop_is_tiled_without_stealing_focus ... ok
+test window_manager::tests::window_on_other_desktop_is_not_reaped ... ok
+test window_manager::tests::workspace_name_is_written_to_the_native_desktop ... ok
+test workspace::tests::test_add_container_to_back ... ok
+test workspace::tests::test_add_container_to_front ... ok
+test workspace::tests::test_contains_managed_window ... ok
+test workspace::tests::test_contains_window ... ok
+test workspace::tests::test_focus_container ... ok
+test workspace::tests::test_focus_container_by_window ... ok
+test workspace::tests::test_focus_first_container ... ok
+test workspace::tests::test_focus_last_container ... ok
+test workspace::tests::test_focus_previous_container ... ok
+test workspace::tests::test_insert_container_at_idx ... ok
+test workspace::tests::test_locked_containers_remove_window ... ok
+test workspace::tests::test_locked_containers_stack ... ok
+test workspace::tests::test_locked_containers_toggle_float ... ok
+test workspace::tests::test_locked_containers_with_new_window ... ok
+test workspace::tests::test_move_window_to_container ... ok
+test workspace::tests::test_move_window_to_non_existent_container ... ok
+test workspace::tests::test_new_container_for_focused_window ... ok
+test workspace::tests::test_new_container_for_window ... ok
+test workspace::tests::test_new_floating_window ... ok
+test workspace::tests::test_remove_container ... ok
+test workspace::tests::test_remove_container_by_idx ... ok
+test workspace::tests::test_remove_focused_container ... ok
+test workspace::tests::test_remove_non_existent_window ... ok
+test workspace::tests::test_remove_window ... ok
+test workspace::tests::test_swap_containers ... ok
+test workspace::tests::test_visible_windows ... ok
+
+failures:
+
+---- state::tests::serialized_global_state_has_no_legacy_virtual_desktop_field stdout ----
+
+thread 'state::tests::serialized_global_state_has_no_legacy_virtual_desktop_field' (36548) panicked at komorebi\src\lib.rs:214:63:
+there is no local data directory
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- window_manager::tests::move_container_moves_every_window_to_target_desktop stdout ----
+
+thread 'window_manager::tests::move_container_moves_every_window_to_target_desktop' (20928) panicked at komorebi\src\window_manager.rs:6253:75:
+move_container_to_workspace failed: Não foi possível encontrar o procedimento especificado. (os error 127)
+
+Location:
+    komorebi\src\windows_api.rs:239:1
+
+
+failures:
+    state::tests::serialized_global_state_has_no_legacy_virtual_desktop_field
+    window_manager::tests::move_container_moves_every_window_to_target_desktop
+
+test result: FAILED. 123 passed; 2 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.60s
+
+   Compiling komorebi v0.1.42 (C:\Users\thevi\AppData\Local\Temp\komorebi-stage1-baseline-y6m95ubb\komorebi)
+warning: unused import: `std::sync::atomic::Ordering`
+  --> komorebi\src\lib.rs:52:5
+   |
+52 | use std::sync::atomic::Ordering;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `wm`
+   --> komorebi\src\border_manager\mod.rs:181:43
+    |
+181 | pub fn redraw_borders_for_focused_desktop(wm: &WindowManager) -> color_eyre::Result<()> {
+    |                                           ^^ help: if this is intentional, prefix it with an underscore: `_wm`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `focused_desktop_idx`
+   --> komorebi\src\reaper.rs:180:13
+    |
+180 |         let focused_desktop_idx = wm.lock().focused_desktop_idx;
+    |             ^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_focused_desktop_idx`
+
+warning: unused `Result` that must be used
+    --> komorebi\src\process_command.rs:2286:17
+     |
+2286 |                 self.apply_state(state.clone());
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+     = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+     |
+2286 |                 let _ = self.apply_state(state.clone());
+     |                 +++++++
+
+warning: `komorebi` (lib test) generated 4 warnings (run `cargo fix --lib -p komorebi --tests` to apply 3 suggestions)
+warning: `komorebi` (lib) generated 4 warnings (4 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.76s
+warning: the following packages contain code that will be rejected by a future version of Rust: net2 v0.2.39
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src\lib.rs (C:\Users\thevi\.local\share\opencode\worktree\dd874b\native-desktop-workspaces\target\debug\deps\komorebi-75970987be5f19ec.exe)
+error: test failed, to rerun pass `-p komorebi --lib`
+
+EXIT 101

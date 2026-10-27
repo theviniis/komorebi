@@ -1,0 +1,248 @@
+   Compiling komorebi v0.1.42 (C:\Users\thevi\.local\share\opencode\worktree\dd874b\native-desktop-workspaces\komorebi)
+warning: unused variable: `wm`
+   --> komorebi\src\border_manager\mod.rs:181:43
+    |
+181 | pub fn redraw_borders_for_focused_desktop(wm: &WindowManager) -> color_eyre::Result<()> {
+    |                                           ^^ help: if this is intentional, prefix it with an underscore: `_wm`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling komorebi-client v0.1.42 (C:\Users\thevi\.local\share\opencode\worktree\dd874b\native-desktop-workspaces\komorebi-client)
+warning: `komorebi` (lib) generated 1 warning (run `cargo fix --lib -p komorebi` to apply 1 suggestion)
+   Compiling komorebic v0.1.42 (C:\Users\thevi\.local\share\opencode\worktree\dd874b\native-desktop-workspaces\komorebic)
+   Compiling komorebi-bar v0.1.42 (C:\Users\thevi\.local\share\opencode\worktree\dd874b\native-desktop-workspaces\komorebi-bar)
+warning: `komorebi` (lib test) generated 1 warning (1 duplicate)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.62s
+warning: the following packages contain code that will be rejected by a future version of Rust: net2 v0.2.39
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src\lib.rs (target\debug\deps\komorebi-9b2c135838dda0be.exe)
+
+running 196 tests
+test container::tests::deserializes_with_missing_locked_field_defaults_to_false ... ok
+test container::tests::serializes_and_deserializes ... ok
+test container::tests::test_add_window ... ok
+test container::tests::test_contains_window ... ok
+test container::tests::test_focus_window ... ok
+test container::tests::test_idx_for_window ... ok
+test container::tests::test_remove_focused_window ... ok
+test container::tests::test_remove_window_by_idx ... ok
+test core::pathext::tests::resolves_env_vars ... ok
+test core::tests::deserializes ... ok
+test lockable_sequence::tests::test_insert_respecting_locks ... ok
+test lockable_sequence::tests::test_remove_respecting_locks ... ok
+test lockable_sequence::tests::test_swap_respecting_locks_various_cases ... ok
+test monitor::tests::test_add_container ... ok
+test monitor::tests::test_ensure_workspace_count_only_default_workspace ... ok
+test monitor::tests::test_ensure_workspace_count_workspace_contains_two_workspaces ... ok
+test monitor::tests::test_focus_workspace ... ok
+test monitor::tests::test_move_container_to_nonexistent_workspace ... ok
+test monitor::tests::test_move_container_to_workspace ... ok
+test monitor::tests::test_new_workspace_idx ... ok
+test monitor::tests::test_remove_nonexistent_workspace ... ok
+test monitor::tests::test_remove_workspace_by_idx ... ok
+test monitor::tests::test_remove_workspaces ... ok
+test monitor_reconciliator::tests::test_attached_display_devices ... ok
+test monitor_reconciliator::tests::test_channel_bounded_capacity ... ok
+test monitor_reconciliator::tests::test_insert_in_monitor_cache ... ok
+test monitor_reconciliator::tests::test_insert_two_monitors_cache ... ok
+test monitor_reconciliator::tests::test_listen_for_notifications ... ok
+test monitor_reconciliator::tests::test_send_notification ... ok
+test notification_startup_tests::initial_update_runs_with_empty_or_full_queue_without_losing_pending_updates ... ok
+test process_command::tests::test_receive_socket_message ... ok
+test process_event::destroy_focus_tests::defers_when_a_successor_took_the_foreground ... ok
+test process_event::destroy_focus_tests::refocuses_when_foreground_is_null ... ok
+test process_event::destroy_focus_tests::refocuses_when_foreground_is_unavailable ... ok
+test process_event::focus_change_tests::allows_focus_change_for_foreground_window ... ok
+test process_event::focus_change_tests::allows_focus_change_when_foreground_unknown ... ok
+test process_event::focus_change_tests::skips_focus_change_from_background_window ... ok
+test state::tests::serialized_global_state_has_no_legacy_virtual_desktop_field ... ok
+test static_config::tests::backwards_compat ... ignored, this fails on github actions due to rate limiting changes introduced in may 2025
+test static_config::tests::deserialize_custom_layout_rules ... ok
+test static_config::tests::native_desktops_are_explicitly_opt_in ... ok
+test static_config::tests::workspace_rule_registration_ignores_excess_native_workspace_configs ... ok
+test test_environment::restores_userprofile_after_unwind ... ok
+test version_gate::tests::build_floor_is_26100_2605 ... ok
+test virtual_desktop::tests::desktop_events_are_translated_to_kinds ... ok
+test virtual_desktop::tests::desktop_index_conversions_roundtrip ... ok
+test virtual_desktop::tests::fake_backend_records_moves_and_names ... ok
+test virtual_desktop::tests::fake_backend_records_operations ... ok
+test virtual_desktop::tests::fake_backend_rejects_unknown_desktops ... ok
+test virtual_desktop::tests::fake_native_lifecycle_keeps_identities_independent_from_indices ... ok
+test virtual_desktop::tests::installed_backend_is_returned_by_backend ... ok
+test window_manager::tests::applying_state_with_fewer_workspaces_than_desktops_keeps_all_desktops ... ok
+test window_manager::tests::applying_state_with_more_workspaces_than_desktops_does_not_lose_windows ... ok
+test window_manager::tests::background_desktop_respects_destination_float_override ... ok
+test window_manager::tests::background_desktop_show_manage_uncloak_do_not_duplicate_or_steal_monitor_focus ... ok
+test window_manager::tests::cloak_from_desktop_transition_does_not_trigger_reconciliation ... ok
+test window_manager::tests::cloak_on_the_focused_desktop_is_still_processed ... ok
+test window_manager::tests::cycle_container_window_in_direction ... ok
+test window_manager::tests::desktop_changed_updates_index_without_switching_back ... ok
+test window_manager::tests::desktop_move_error_after_native_move_reconciles_the_failed_member ... ok
+test window_manager::tests::desktop_move_follow_transfers_stack_before_switching ... ok
+test window_manager::tests::desktop_move_invalid_or_same_destination_has_no_native_effects ... ok
+test window_manager::tests::desktop_move_native_notifications_do_not_split_the_transferred_stack ... ok
+test window_manager::tests::desktop_move_of_monocle_restores_source_stack_selection_and_floats ... ok
+test window_manager::tests::desktop_move_partial_failure_reconciles_all_members_without_following ... ok
+test window_manager::tests::desktop_move_rejects_maximized_before_native_side_effects ... ok
+test window_manager::tests::desktop_move_selects_active_float_instead_of_stack ... ok
+test window_manager::tests::desktop_move_without_follow_keeps_a_valid_source_container_selection ... ok
+test window_manager::tests::desktop_moved_permutes_workspaces_on_every_monitor ... ok
+test window_manager::tests::external_desktop_move_ignores_unmanaged_windows ... ok
+test window_manager::tests::external_desktop_move_is_idempotent_and_preserves_monitor_and_focus ... ok
+test window_manager::tests::external_desktop_move_keeps_floating_window_floating ... ok
+test window_manager::tests::external_desktop_move_of_last_monocle_restores_stack_selection_and_floats ... ok
+test window_manager::tests::external_desktop_move_preserves_surviving_stack_selection ... ok
+test window_manager::tests::external_desktop_move_query_failure_preserves_management ... ok
+test window_manager::tests::external_desktop_move_restores_only_newly_selected_stack_member ... ok
+test window_manager::tests::focus_desktop_moves_every_monitor_to_the_same_index ... ok
+test window_manager::tests::focus_desktop_rejects_out_of_range_index ... ok
+test window_manager::tests::load_focused_workspace_does_not_hide_other_workspaces ... ok
+test window_manager::tests::move_container_moves_every_window_to_target_desktop ... ok
+test window_manager::tests::moving_a_workspace_to_another_monitor_is_rejected ... ok
+test window_manager::tests::native_desktop_regressions::desktop_identity_cached_monitor_keeps_its_own_workspace_associations ... ok
+test window_manager::tests::native_desktop_regressions::desktop_identity_closed_window_does_not_block_removal ... ok
+test window_manager::tests::native_desktop_regressions::desktop_identity_creation_at_each_position_preserves_survivors ... ok
+test window_manager::tests::native_desktop_regressions::desktop_identity_failed_window_query_keeps_old_state_until_retry ... ok
+test window_manager::tests::native_desktop_regressions::desktop_identity_focus_event_redraws_once_and_publishes_native_focus ... ok
+test window_manager::tests::native_desktop_regressions::desktop_identity_global_changes_are_detected_even_without_monitors ... ok
+test window_manager::tests::native_desktop_regressions::desktop_identity_index_commands_refresh_native_topology_before_resolving_target ... ok
+test window_manager::tests::native_desktop_regressions::desktop_identity_invalid_snapshots_do_not_mutate_the_last_coherent_state ... ok
+test window_manager::tests::native_desktop_regressions::desktop_identity_names_and_empty_names_update_all_caches_and_subscribers ... ok
+test window_manager::tests::native_desktop_regressions::desktop_identity_reaper_cleans_dead_background_windows ... ok
+test window_manager::tests::native_desktop_regressions::desktop_identity_reaper_preserves_windows_before_the_queued_native_event ... ok
+test window_manager::tests::native_desktop_regressions::desktop_identity_reaper_rejects_stale_or_background_associations ... ok
+test window_manager::tests::native_desktop_regressions::desktop_identity_removal_at_each_position_and_current_preserves_windows_and_layouts ... ok
+test window_manager::tests::native_desktop_regressions::desktop_identity_removal_uses_each_actual_window_destination_including_special_modes ... ok
+test window_manager::tests::native_desktop_regressions::desktop_identity_reorders_all_positions_and_focus_without_reapplying_delayed_events ... ok
+test window_manager::tests::native_desktop_regressions::desktop_identity_stack_move_keeps_target_when_windows_reorders_desktops_mid_command ... ok
+test window_manager::tests::native_desktop_regressions::explicit_rule_moves_native_desktop_and_monitor_without_following ... ok
+test window_manager::tests::native_desktop_regressions::failed_initial_rule_is_retryable_and_does_not_lose_the_window ... ok
+test window_manager::tests::native_desktop_regressions::fixture_restores_backend_and_global_caches_after_panic ... ok
+test window_manager::tests::native_desktop_regressions::floating_monitor_failure_reconciles_desktop_and_preserves_original_monitor ... ok
+test window_manager::tests::native_desktop_regressions::floating_rule_updates_monitor_geometry_and_native_desktop ... ok
+test window_manager::tests::native_desktop_regressions::ignored_event_also_repairs_derived_caches ... ok
+test window_manager::tests::native_desktop_regressions::initial_rule_does_not_undo_a_later_task_view_move ... ok
+test window_manager::tests::native_desktop_regressions::invalid_rule_destinations_do_not_move_or_create_workspaces ... ok
+test window_manager::tests::native_desktop_regressions::mouse_capture_early_return_keeps_rule_movement_caches_consistent ... ok
+test window_manager::tests::native_desktop_regressions::native_compat_config_load_and_reload_preserve_windows_names ... ok
+test window_manager::tests::native_desktop_regressions::native_compat_discovery_places_windows_on_their_native_desktops_without_following ... ok
+test window_manager::tests::native_desktop_regressions::native_compat_eager_focus_switches_native_desktop_before_selecting_window ... ok
+test window_manager::tests::native_desktop_regressions::native_compat_failed_monitor_move_publishes_reconciled_native_membership ... ok
+test window_manager::tests::native_desktop_regressions::native_compat_focus_last_and_aliases_use_one_global_desktop ... ok
+test window_manager::tests::native_desktop_regressions::native_compat_hotplug_preserves_background_windows_and_current_desktop_without_minimizing ... ok
+test window_manager::tests::native_desktop_regressions::native_compat_hotplug_query_failure_rolls_back_membership_and_cache ... ok
+test window_manager::tests::native_desktop_regressions::native_compat_hotplug_rebuilds_preferences_and_distinguishes_monitors_without_serials ... ok
+test window_manager::tests::native_desktop_regressions::native_compat_legacy_serialized_state_uses_current_native_focus_and_names ... ok
+test window_manager::tests::native_desktop_regressions::native_compat_monitor_desktop_movement_keeps_all_rings_global ... ok
+test window_manager::tests::native_desktop_regressions::native_compat_monitor_move_translates_untiled_stack_and_preserves_selection ... ok
+test window_manager::tests::native_desktop_regressions::native_compat_obsolete_commands_cannot_create_remove_or_swap_desktops ... ok
+test window_manager::tests::native_desktop_regressions::native_compat_restore_keeps_resize_and_current_config_without_restoring_preselection ... ok
+test window_manager::tests::native_desktop_regressions::native_compat_restore_queries_destinations_and_preserves_new_windows_and_modes ... ok
+test window_manager::tests::native_desktop_regressions::native_compat_restore_unknown_live_window_fails_without_overwriting_state ... ok
+test window_manager::tests::native_desktop_regressions::native_hotplug_adopts_removed_monitor_windows_despite_stale_hwnd_cache ... ok
+test window_manager::tests::native_desktop_regressions::native_navigation_stops_at_both_ends_and_refreshes_native_focus ... ok
+test window_manager::tests::native_desktop_regressions::repeated_events_are_idempotent_for_focused_and_background_desktops ... ok
+test window_manager::tests::native_desktop_regressions::repeated_events_preserve_existing_stacks_and_foreground_selection ... ok
+test window_manager::tests::native_desktop_regressions::rule_to_current_desktop_is_enforced_and_keeps_target_append_behaviour ... ok
+test window_manager::tests::native_desktop_regressions::subscribers_receive_partial_state_when_centering_fails ... ok
+test window_manager::tests::native_desktop_regressions::subscribers_receive_rule_changes_before_mouse_capture_returns ... ok
+test window_manager::tests::new_workspace_is_a_noop ... ok
+test window_manager::tests::optional_mode_tests::traditional_commands_keep_independent_counts_names_and_focus_without_native_calls ... ok
+test window_manager::tests::optional_mode_tests::traditional_cross_monitor_transfer_accepts_different_workspace_indices ... ok
+test window_manager::tests::optional_mode_tests::traditional_state_and_config_reload_cannot_enable_native_mode ... ok
+test window_manager::tests::switching_desktop_redraws_borders_once ... ok
+test window_manager::tests::sync_desktop_count_keeps_monitors_uniform ... ok
+test window_manager::tests::test_create_window_manager ... ok
+test window_manager::tests::test_cycle_container_window_index_in_direction ... ok
+test window_manager::tests::test_cycle_nonexistent_windows ... ok
+test window_manager::tests::test_float_nonexistent_window ... ok
+test window_manager::tests::test_float_window ... ok
+test window_manager::tests::test_focus_container_in_cycle_direction ... ok
+test window_manager::tests::test_focus_workspace ... ok
+test window_manager::tests::test_focused_monitor_size ... ok
+test window_manager::tests::test_maximize_and_unmaximize_window ... ok
+test window_manager::tests::test_monocle_on_and_monocle_off ... ok
+test window_manager::tests::test_monocle_on_and_off_nonexistent_container ... ok
+test window_manager::tests::test_move_workspace_to_monitor ... ok
+test window_manager::tests::test_move_workspace_to_nonexistent_monitor ... ok
+test window_manager::tests::test_remove_focused_workspace ... ok
+test window_manager::tests::test_remove_nonexistent_window_from_container ... ok
+test window_manager::tests::test_remove_window_from_container ... ok
+test window_manager::tests::test_set_workspace_name ... ok
+test window_manager::tests::test_swap_container_with_nonexistent_container ... ok
+test window_manager::tests::test_swap_containers ... ok
+test window_manager::tests::test_swap_monitor_workspaces ... ok
+test window_manager::tests::test_swap_workspace_with_nonexistent_monitor ... ok
+test window_manager::tests::test_switch_focus_monitors ... ok
+test window_manager::tests::test_switch_focus_to_nonexistent_monitor ... ok
+test window_manager::tests::test_toggle_lock ... ok
+test window_manager::tests::test_toggle_maximize ... ok
+test window_manager::tests::test_toggle_maximize_nonexistent_window ... ok
+test window_manager::tests::test_toggle_monocle ... ok
+test window_manager::tests::test_toggle_monocle_nonexistent_container ... ok
+test window_manager::tests::test_toggle_tiling ... ok
+test window_manager::tests::test_transfer_container ... ok
+test window_manager::tests::test_transfer_window ... ok
+test window_manager::tests::test_transfer_window_to_nonexistent_monitor ... ok
+test window_manager::tests::test_workspace_names_synced_from_backend ... ok
+test window_manager::tests::window_born_on_other_desktop_is_tiled_without_stealing_focus ... ok
+test window_manager::tests::window_on_other_desktop_is_not_reaped ... ok
+test window_manager::tests::workspace_name_is_written_to_the_native_desktop ... ok
+test workspace::tests::test_add_container_to_back ... ok
+test workspace::tests::test_add_container_to_front ... ok
+test workspace::tests::test_contains_managed_window ... ok
+test workspace::tests::test_contains_window ... ok
+test workspace::tests::test_focus_container ... ok
+test workspace::tests::test_focus_container_by_window ... ok
+test workspace::tests::test_focus_first_container ... ok
+test workspace::tests::test_focus_last_container ... ok
+test workspace::tests::test_focus_previous_container ... ok
+test workspace::tests::test_insert_container_at_idx ... ok
+test workspace::tests::test_locked_containers_remove_window ... ok
+test workspace::tests::test_locked_containers_stack ... ok
+test workspace::tests::test_locked_containers_toggle_float ... ok
+test workspace::tests::test_locked_containers_with_new_window ... ok
+test workspace::tests::test_move_window_to_container ... ok
+test workspace::tests::test_move_window_to_non_existent_container ... ok
+test workspace::tests::test_new_container_for_focused_window ... ok
+test workspace::tests::test_new_container_for_window ... ok
+test workspace::tests::test_new_floating_window ... ok
+test workspace::tests::test_remove_container ... ok
+test workspace::tests::test_remove_container_by_idx ... ok
+test workspace::tests::test_remove_focused_container ... ok
+test workspace::tests::test_remove_non_existent_window ... ok
+test workspace::tests::test_remove_window ... ok
+test workspace::tests::test_swap_containers ... ok
+test workspace::tests::test_visible_windows ... ok
+
+test result: ok. 195 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 2.76s
+
+     Running unittests src\main.rs (target\debug\deps\komorebi-a730c430edd25a7a.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\main.rs (target\debug\deps\komorebi_bar-a1604e97033e7113.exe)
+
+running 6 tests
+test config::tests::extend_existing_variant ... ok
+test config::tests::extend_invalid_variant ... ok
+test config::tests::extend_new_variant ... ok
+test widgets::komorebi::native_desktop_tests::bar_handles_incomplete_workspace_state_without_indexing_outside_the_ring ... ok
+test widgets::komorebi::native_desktop_tests::bar_uses_global_native_focus_on_every_monitor_even_with_stale_rings ... ok
+test widgets::komorebi::native_desktop_tests::traditional_bar_uses_each_monitors_focus_and_workspace_count ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running unittests src\lib.rs (target\debug\deps\komorebi_client-666b7c3d6c9476cd.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\main.rs (target\debug\deps\komorebic-0c67efc8bc6216c5.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

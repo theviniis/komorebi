@@ -92,7 +92,9 @@ pub enum SocketMessage {
     MoveContainerToMonitorWorkspaceNumber(usize, usize),
     SendContainerToNamedWorkspace(String),
     CycleMoveWorkspaceToMonitor(CycleDirection),
+    /// Move a workspace between monitors; unsupported in native mode.
     MoveWorkspaceToMonitorNumber(usize),
+    /// Swap monitor workspaces; unsupported in native mode.
     SwapWorkspacesToMonitorNumber(usize),
     ForceFocus,
     Close,
@@ -132,8 +134,11 @@ pub enum SocketMessage {
     // Monitor and Workspace Commands
     MonitorIndexPreference(usize, i32, i32, i32, i32),
     DisplayIndexPreference(usize, String),
+    /// In native mode, compatibility no-op: native desktops are created in Windows Task View.
     EnsureWorkspaces(usize, usize),
+    /// In native mode, compatibility no-op: native desktop creation and naming belong to Task View.
     EnsureNamedWorkspaces(usize, Vec<String>),
+    /// In native mode, compatibility no-op: create a desktop in Windows Task View.
     NewWorkspace,
     ToggleTiling,
     Stop,
@@ -151,8 +156,11 @@ pub enum SocketMessage {
     FocusMonitorNumber(usize),
     FocusMonitorAtCursor,
     FocusLastWorkspace,
+    /// In native mode, compatibility no-op: remove a desktop in Windows Task View.
     CloseWorkspace,
+    /// Focus a workspace by zero-based index; global desktop in native mode.
     FocusWorkspaceNumber(usize),
+    /// Focus a workspace on all monitors; alias for FocusWorkspaceNumber in native mode.
     FocusWorkspaceNumbers(usize),
     FocusMonitorWorkspaceNumber(usize, usize),
     FocusNamedWorkspace(String),
@@ -760,9 +768,7 @@ mod tests {
     #[test]
     fn deserializes() {
         // Set a variable for testing
-        unsafe {
-            std::env::set_var("VAR", "VALUE");
-        }
+        let _var_guard = crate::TestEnvGuard::set("VAR", "VALUE");
 
         let json = r#"{"type":"WorkspaceLayoutCustomRule","content":[0,0,0,"/path/%VAR%/d"]}"#;
         let message: SocketMessage = serde_json::from_str(json).unwrap();

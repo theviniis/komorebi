@@ -66,8 +66,7 @@ pub fn listen_for_notifications(wm: Arc<Mutex<WindowManager>>) {
 pub fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result<()> {
     tracing::info!("listening");
 
-    let receiver = event_rx();
-    event_tx().send(Notification)?;
+    let receiver = crate::notifications_with_initial(event_rx(), Notification);
 
     'receiver: for _ in receiver {
         let known_hwnds = KNOWN_HWNDS.get_or_init(|| Mutex::new(Vec::new()));

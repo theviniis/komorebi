@@ -17,3 +17,5 @@ Options:
           Print help
 
 ```
+
+Native mode (`"native_desktop_workspaces": true` in `komorebi.json`; requires restart): This command is a compatibility no-op in native mode; create and name desktops in Windows Task View.

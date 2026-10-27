@@ -53,7 +53,7 @@ pub fn listen_for_notifications(
     wm: Arc<Mutex<WindowManager>>,
     known_hwnds: HashMap<isize, (usize, usize)>,
 ) {
-    watch_for_orphans(known_hwnds);
+    watch_for_orphans(wm.clone(), known_hwnds);
 
     std::thread::spawn(move || {
         loop {
@@ -69,6 +69,21 @@ pub fn listen_for_notifications(
     });
 }
 
+/// Orphan messages carry the association observed by the polling thread.
+/// A desktop event can invalidate it before the queue is consumed.
+pub(crate) fn should_reap_orphan(wm: &WindowManager, hwnd: isize, pair: (usize, usize)) -> bool {
+    should_reap_orphan_with_window_validity(wm, hwnd, pair, Window::from(hwnd).is_window())
+}
+
+pub(crate) fn should_reap_orphan_with_window_validity(
+    wm: &WindowManager,
+    hwnd: isize,
+    pair: (usize, usize),
+    is_window: bool,
+) -> bool {
+    wm.known_hwnds.get(&hwnd) == Some(&pair) && (!is_window || !wm.is_window_on_other_desktop(hwnd))
+}
+
 fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result<()> {
     tracing::info!("listening");
 
@@ -81,6 +96,9 @@ fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result<()>
         let mut update_borders = false;
 
         for (hwnd, (m_idx, w_idx)) in orphan_hwnds.iter() {
+            if !should_reap_orphan(&wm, *hwnd, (*m_idx, *w_idx)) {
+                continue;
+            }
             if let Some(monitor) = wm.monitors_mut().get_mut(*m_idx) {
                 let focused_workspace_idx = monitor.focused_workspace_idx();
 
@@ -127,6 +145,7 @@ fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result<()>
             )?;
         }
 
+        wm.update_known_hwnds();
         if update_borders {
             border_manager::send_notification(None);
         }
@@ -145,7 +164,7 @@ fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result<()>
     Ok(())
 }
 
-fn watch_for_orphans(known_hwnds: HashMap<isize, (usize, usize)>) {
+fn watch_for_orphans(wm: Arc<Mutex<WindowManager>>, known_hwnds: HashMap<isize, (usize, usize)>) {
     // Cache current hwnds
     {
         let mut cache = HWNDS_CACHE.lock();
@@ -154,7 +173,7 @@ fn watch_for_orphans(known_hwnds: HashMap<isize, (usize, usize)>) {
 
     std::thread::spawn(move || {
         loop {
-            match find_orphans() {
+            match find_orphans(wm.clone()) {
                 Ok(()) => {
                     tracing::warn!("restarting finished thread");
                 }
@@ -170,21 +189,31 @@ fn watch_for_orphans(known_hwnds: HashMap<isize, (usize, usize)>) {
     });
 }
 
-fn find_orphans() -> color_eyre::Result<()> {
+fn find_orphans(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result<()> {
     tracing::info!("watching");
 
     loop {
         std::thread::sleep(Duration::from_millis(20));
         let hiding_behaviour = *HIDING_BEHAVIOUR.lock();
 
-        let mut cache = HWNDS_CACHE.lock();
+        // Never hold the cache while locking the WM: reconciliation locks them in
+        // the opposite direction when rebuilding desktop associations.
+        let cache = HWNDS_CACHE.lock().clone();
         let mut orphan_hwnds = HashMap::new();
 
         for (hwnd, (m_idx, w_idx)) in cache.iter() {
             let window = Window::from(*hwnd);
 
+            let is_window = window.is_window();
+
+            // Native desktop hiding protects live windows only. A destroyed HWND
+            // must still be removed from its stored background workspace.
+            if is_window && wm.lock().is_window_on_other_desktop(*hwnd) {
+                continue;
+            }
+
             #[allow(deprecated)]
-            if !window.is_window()
+            if !is_window
                 || (
                     // This one is a hack because WINWORD.EXE is an absolute trainwreck of an app
                     // when multiple docs are open, it keeps open an invisible window, with WS_EX_LAYERED
@@ -204,7 +233,9 @@ fn find_orphans() -> color_eyre::Result<()> {
 
         if !orphan_hwnds.is_empty() {
             // Update reaper cache
-            cache.retain(|h, _| !orphan_hwnds.contains_key(h));
+            HWNDS_CACHE
+                .lock()
+                .retain(|h, pair| orphan_hwnds.get(h) != Some(pair));
 
             // Send handles to remove
             event_tx().send(ReaperNotification(orphan_hwnds))?;

@@ -29,6 +29,22 @@ pub enum WindowManagerEvent {
     Unmanage(Window),
     Raise(Window),
     TitleUpdate(WinEvent, Window),
+    DesktopChanged {
+        new: usize,
+        old: usize,
+    },
+    DesktopCountChanged,
+    WindowDesktopChanged {
+        hwnd: isize,
+    },
+    DesktopMoved {
+        desktop: usize,
+        old: usize,
+        new: usize,
+    },
+    DesktopRenamed {
+        desktop: usize,
+    },
 }
 
 impl Display for WindowManagerEvent {
@@ -79,13 +95,30 @@ impl Display for WindowManagerEvent {
             Self::TitleUpdate(winevent, window) => {
                 write!(f, "TitleUpdate (WinEvent: {winevent}, Window: {window})")
             }
+            Self::DesktopChanged { new, old } => {
+                write!(f, "DesktopChanged (new: {new}, old: {old})")
+            }
+            Self::DesktopCountChanged => {
+                write!(f, "DesktopCountChanged")
+            }
+            Self::WindowDesktopChanged { hwnd } => write!(f, "WindowDesktopChanged (hwnd: {hwnd})"),
+            Self::DesktopMoved { desktop, old, new } => {
+                write!(
+                    f,
+                    "DesktopMoved (desktop: {desktop}, old: {old}, new: {new})"
+                )
+            }
+            Self::DesktopRenamed { desktop } => {
+                write!(f, "DesktopRenamed (desktop: {desktop})")
+            }
         }
     }
 }
 
 impl WindowManagerEvent {
-    pub const fn window(self) -> Window {
+    pub fn window(self) -> Window {
         match self {
+            Self::WindowDesktopChanged { hwnd } => Window::from(hwnd),
             Self::Destroy(_, window)
             | Self::FocusChange(_, window)
             | Self::Hide(_, window)
@@ -100,10 +133,14 @@ impl WindowManagerEvent {
             | Self::Manage(window)
             | Self::Unmanage(window)
             | Self::TitleUpdate(_, window) => window,
+            Self::DesktopChanged { .. }
+            | Self::DesktopCountChanged
+            | Self::DesktopMoved { .. }
+            | Self::DesktopRenamed { .. } => Window::default(),
         }
     }
 
-    pub const fn hwnd(self) -> isize {
+    pub fn hwnd(self) -> isize {
         self.window().hwnd
     }
 
@@ -123,6 +160,11 @@ impl WindowManagerEvent {
             WindowManagerEvent::Unmanage(_) => "Unmanage",
             WindowManagerEvent::Raise(_) => "Raise",
             WindowManagerEvent::TitleUpdate(_, _) => "TitleUpdate",
+            WindowManagerEvent::DesktopChanged { .. } => "DesktopChanged",
+            WindowManagerEvent::DesktopCountChanged => "DesktopCountChanged",
+            WindowManagerEvent::WindowDesktopChanged { .. } => "WindowDesktopChanged",
+            WindowManagerEvent::DesktopMoved { .. } => "DesktopMoved",
+            WindowManagerEvent::DesktopRenamed { .. } => "DesktopRenamed",
         }
     }
 
@@ -141,7 +183,12 @@ impl WindowManagerEvent {
             | WindowManagerEvent::TitleUpdate(event, _) => Some(event.to_string()),
             WindowManagerEvent::Manage(_)
             | WindowManagerEvent::Unmanage(_)
-            | WindowManagerEvent::Raise(_) => None,
+            | WindowManagerEvent::Raise(_)
+            | WindowManagerEvent::DesktopChanged { .. }
+            | WindowManagerEvent::DesktopCountChanged
+            | WindowManagerEvent::WindowDesktopChanged { .. }
+            | WindowManagerEvent::DesktopMoved { .. }
+            | WindowManagerEvent::DesktopRenamed { .. } => None,
         }
     }
 

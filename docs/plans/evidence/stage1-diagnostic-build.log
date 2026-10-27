@@ -1,0 +1,7 @@
+Command: cargo test -p komorebi --lib --no-run --message-format=json
+Dependency compiler-artifact JSON omitted; executable hash is in stage1-reconstruction.json.
+{"reason":"build-finished","success":true}
+   Compiling komorebi v0.1.42 (C:\Users\thevi\AppData\Local\Temp\komorebi-stage1-baseline-y6m95ubb\komorebi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.01s
+warning: the following packages contain code that will be rejected by a future version of Rust: net2 v0.2.39
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`

@@ -20,7 +20,6 @@ use crate::FloatingLayerBehaviour;
 use crate::Layout;
 use crate::OperationDirection;
 use crate::Wallpaper;
-use crate::WindowsApi;
 use crate::container::Container;
 use crate::ring::Ring;
 use crate::workspace::Workspace;
@@ -30,6 +29,8 @@ use crate::workspace::WorkspaceLayer;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Monitor {
+    #[serde(skip)]
+    pub(crate) native_desktop_workspaces: bool,
     pub id: isize,
     pub name: String,
     pub device: String,
@@ -88,6 +89,7 @@ pub fn new(
     workspaces.elements_mut().push_back(Workspace::default());
 
     Monitor {
+        native_desktop_workspaces: false,
         id,
         name,
         device,
@@ -131,6 +133,7 @@ impl Monitor {
 
     pub fn placeholder() -> Self {
         Self {
+            native_desktop_workspaces: false,
             id: 0,
             name: "PLACEHOLDER".to_string(),
             device: "".to_string(),
@@ -168,18 +171,29 @@ impl Monitor {
     }
 
     pub fn load_focused_workspace(&mut self, mouse_follows_focus: bool) -> eyre::Result<()> {
-        let focused_idx = self.focused_workspace_idx();
-        let hmonitor = self.id;
-        let monitor_wp = self.wallpaper.clone();
-        for (i, workspace) in self.workspaces_mut().iter_mut().enumerate() {
-            if i == focused_idx {
-                workspace.restore(mouse_follows_focus, hmonitor, &monitor_wp)?;
-            } else {
-                workspace.hide(None);
+        if !self.native_desktop_workspaces {
+            let focused_idx = self.focused_workspace_idx();
+            let hmonitor = self.id;
+            let monitor_wp = self.wallpaper.clone();
+            for (i, workspace) in self.workspaces_mut().iter_mut().enumerate() {
+                if i == focused_idx {
+                    workspace.restore(mouse_follows_focus, hmonitor, &monitor_wp)?;
+                } else {
+                    workspace.hide(None);
+                }
             }
-        }
 
-        Ok(())
+            Ok(())
+        } else {
+            let focused_idx = self.focused_workspace_idx();
+            let hmonitor = self.id;
+            let monitor_wp = self.wallpaper.clone();
+            if let Some(workspace) = self.workspaces_mut().get_mut(focused_idx) {
+                workspace.restore(mouse_follows_focus, hmonitor, &monitor_wp)?;
+            }
+
+            Ok(())
+        }
     }
 
     /// Updates the `globals` field of all workspaces
@@ -356,28 +370,88 @@ impl Monitor {
     }
 
     pub fn remove_workspace_by_idx(&mut self, idx: usize) -> Option<Workspace> {
-        if idx < self.workspaces().len() {
-            return self.workspaces_mut().remove(idx);
-        }
-
-        if idx == 0 {
-            self.workspaces_mut().push_back(Workspace::default());
+        if !self.native_desktop_workspaces {
+            let focused_idx = self.focused_workspace_idx();
+            let removed = self.workspaces_mut().remove(idx)?;
+            self.workspace_names = std::mem::take(&mut self.workspace_names)
+                .into_iter()
+                .filter_map(|(index, name)| {
+                    if index == idx {
+                        None
+                    } else {
+                        Some((if index > idx { index - 1 } else { index }, name))
+                    }
+                })
+                .collect();
+            if self.workspaces().is_empty() {
+                self.workspaces_mut().push_back(Workspace::default());
+            }
+            let new_focus = if idx <= focused_idx {
+                focused_idx.saturating_sub(1)
+            } else {
+                focused_idx
+            };
+            self.workspaces
+                .focus(new_focus.min(self.workspaces().len() - 1));
+            self.last_focused_workspace = self.last_focused_workspace.map(|last| {
+                let shifted = if idx <= last {
+                    last.saturating_sub(1)
+                } else {
+                    last
+                };
+                shifted.min(self.workspaces().len() - 1)
+            });
+            Some(removed)
         } else {
-            self.focus_workspace(idx.saturating_sub(1)).ok()?;
-        };
-
-        None
+            let _ = idx;
+            tracing::warn!("removing workspaces independently of native desktops is not supported");
+            None
+        }
     }
 
     pub fn ensure_workspace_count(&mut self, ensure_count: usize) {
-        if self.workspaces().len() < ensure_count {
-            self.workspaces_mut()
-                .resize(ensure_count, Workspace::default());
+        if !self.native_desktop_workspaces {
+            if self.workspaces().len() < ensure_count {
+                self.workspaces_mut()
+                    .resize(ensure_count, Workspace::default());
+            }
+        } else {
+            tracing::warn!("ensure_workspace_count is a no-op: desktops are managed by Task View");
         }
     }
 
+    /// Resize the workspace list to exactly `count` (grow or shrink).
+    ///
+    /// A minimum of 1 workspace is always kept.  The focused index inside the
+    /// Ring is NOT changed here; the caller (`WindowManager::sync_desktop_count`)
+    /// is responsible for calling `set_focused_workspace_idx` afterwards so the
+    /// invariant holds:
+    ///
+    ///   **Every monitor has `workspaces().len() == desktop_count`, and
+    ///   every monitor's `focused_workspace_idx()` equals the global
+    ///   `WindowManager::focused_desktop_idx`.**
+    pub fn sync_workspace_count(&mut self, count: usize) {
+        self.native_desktop_workspaces = true;
+
+        self.workspaces_mut()
+            .resize(count.max(1), Workspace::default());
+    }
+
+    /// Set the Ring's focused index so that `focused_workspace_idx()` reflects
+    /// the global `WindowManager::focused_desktop_idx`.
+    pub fn set_focused_workspace_idx(&mut self, idx: usize) {
+        self.workspaces.focus(idx);
+    }
+
     pub fn remove_workspaces(&mut self) -> VecDeque<Workspace> {
-        std::mem::take(self.workspaces_mut())
+        if !self.native_desktop_workspaces {
+            std::mem::take(self.workspaces_mut())
+        } else {
+            tracing::warn!(
+                "removing all workspaces independently of native desktops is not supported"
+            );
+            VecDeque::new()
+        }
     }
 
     #[tracing::instrument(skip(self))]
@@ -387,23 +461,58 @@ impl Monitor {
         follow: bool,
         direction: Option<OperationDirection>,
     ) -> eyre::Result<()> {
-        let workspace = self
-            .focused_workspace_mut()
-            .ok_or_eyre("there is no workspace")?;
+        self.move_container_to_workspace_with_window_api(
+            target_workspace_idx,
+            follow,
+            direction,
+            &crate::windows_api::RealWindowsApi,
+        )
+    }
 
-        if workspace.maximized_window.is_some() {
-            bail!("cannot move native maximized window to another monitor or workspace");
-        }
+    pub fn move_container_to_workspace_with_window_api(
+        &mut self,
+        target_workspace_idx: usize,
+        follow: bool,
+        direction: Option<OperationDirection>,
+        window_api: &dyn crate::windows_api::WindowApi,
+    ) -> eyre::Result<()> {
+        if !self.native_desktop_workspaces {
+            let workspace = self
+                .focused_workspace_mut()
+                .ok_or_eyre("there is no workspace")?;
 
-        let foreground_hwnd = WindowsApi::foreground_window()?;
-        let floating_window_index = workspace
-            .floating_windows()
-            .iter()
-            .position(|w| w.hwnd == foreground_hwnd);
+            if workspace.maximized_window.is_some() {
+                bail!("cannot move native maximized window to another monitor or workspace");
+            }
 
-        if let Some(idx) = floating_window_index {
-            if let Some(window) = workspace.floating_windows_mut().remove(idx) {
+            let foreground_hwnd = window_api.foreground_window()?;
+            let floating_window_index = workspace
+                .floating_windows()
+                .iter()
+                .position(|w| w.hwnd == foreground_hwnd);
+
+            if let Some(idx) = floating_window_index {
+                if let Some(window) = workspace.floating_windows_mut().remove(idx) {
+                    let workspaces = self.workspaces_mut();
+                    #[allow(clippy::option_if_let_else)]
+                    let target_workspace = match workspaces.get_mut(target_workspace_idx) {
+                        None => {
+                            workspaces.resize(target_workspace_idx + 1, Workspace::default());
+                            workspaces.get_mut(target_workspace_idx).unwrap()
+                        }
+                        Some(workspace) => workspace,
+                    };
+
+                    target_workspace.floating_windows_mut().push_back(window);
+                    target_workspace.layer = WorkspaceLayer::Floating;
+                }
+            } else {
+                let container = workspace
+                    .remove_focused_container()
+                    .ok_or_eyre("there is no container")?;
+
                 let workspaces = self.workspaces_mut();
+
                 #[allow(clippy::option_if_let_else)]
                 let target_workspace = match workspaces.get_mut(target_workspace_idx) {
                     None => {
@@ -413,83 +522,94 @@ impl Monitor {
                     Some(workspace) => workspace,
                 };
 
-                target_workspace.floating_windows_mut().push_back(window);
-                target_workspace.layer = WorkspaceLayer::Floating;
+                if target_workspace.monocle_container.is_some() {
+                    for container in target_workspace.containers_mut() {
+                        container.restore();
+                    }
+
+                    for window in target_workspace.floating_windows_mut() {
+                        window.restore();
+                    }
+
+                    target_workspace.reintegrate_monocle_container()?;
+                }
+
+                target_workspace.layer = WorkspaceLayer::Tiling;
+
+                if let Some(direction) = direction {
+                    self.add_container_with_direction(
+                        container,
+                        Some(target_workspace_idx),
+                        direction,
+                    )?;
+                } else {
+                    target_workspace.add_container_to_back(container);
+                }
             }
+
+            if follow {
+                self.focus_workspace(target_workspace_idx)?;
+            }
+
+            Ok(())
         } else {
-            let container = workspace
-                .remove_focused_container()
-                .ok_or_eyre("there is no container")?;
-
-            let workspaces = self.workspaces_mut();
-
-            #[allow(clippy::option_if_let_else)]
-            let target_workspace = match workspaces.get_mut(target_workspace_idx) {
-                None => {
-                    workspaces.resize(target_workspace_idx + 1, Workspace::default());
-                    workspaces.get_mut(target_workspace_idx).unwrap()
-                }
-                Some(workspace) => workspace,
-            };
-
-            if target_workspace.monocle_container.is_some() {
-                for container in target_workspace.containers_mut() {
-                    container.restore();
-                }
-
-                for window in target_workspace.floating_windows_mut() {
-                    window.restore();
-                }
-
-                target_workspace.reintegrate_monocle_container()?;
-            }
-
-            target_workspace.layer = WorkspaceLayer::Tiling;
-
-            if let Some(direction) = direction {
-                self.add_container_with_direction(
-                    container,
-                    Some(target_workspace_idx),
-                    direction,
-                )?;
-            } else {
-                target_workspace.add_container_to_back(container);
-            }
+            bail!("move windows through WindowManager to synchronize native desktops")
         }
-
-        if follow {
-            self.focus_workspace(target_workspace_idx)?;
-        }
-
-        Ok(())
     }
 
     #[tracing::instrument(skip(self))]
     pub fn focus_workspace(&mut self, idx: usize) -> eyre::Result<()> {
-        tracing::info!("focusing workspace");
+        if !self.native_desktop_workspaces {
+            tracing::info!("focusing workspace");
 
-        {
-            let workspaces = self.workspaces_mut();
+            {
+                let workspaces = self.workspaces_mut();
 
-            if workspaces.get(idx).is_none() {
-                workspaces.resize(idx + 1, Workspace::default());
+                if workspaces.get(idx).is_none() {
+                    workspaces.resize(idx + 1, Workspace::default());
+                }
+                self.last_focused_workspace = Some(self.workspaces.focused_idx());
+                self.workspaces.focus(idx);
             }
-            self.last_focused_workspace = Some(self.workspaces.focused_idx());
-            self.workspaces.focus(idx);
-        }
 
-        // Always set the latest known name when creating the workspace for the first time
-        {
-            let name = { self.workspace_names.get(&idx).cloned() };
-            if name.is_some() {
-                self.workspaces_mut()
-                    .get_mut(idx)
-                    .ok_or_eyre("there is no workspace")?
-                    .name = name;
+            // Always set the latest known name when creating the workspace for the first time
+            {
+                let name = { self.workspace_names.get(&idx).cloned() };
+                if name.is_some() {
+                    self.workspaces_mut()
+                        .get_mut(idx)
+                        .ok_or_eyre("there is no workspace")?
+                        .name = name;
+                }
             }
-        }
 
-        Ok(())
+            Ok(())
+        } else {
+            tracing::info!("focusing workspace");
+
+            {
+                let workspaces = self.workspaces_mut();
+
+                if workspaces.get(idx).is_none() {
+                    bail!("native desktop index {idx} does not exist");
+                }
+                self.last_focused_workspace = Some(self.workspaces.focused_idx());
+                self.workspaces.focus(idx);
+            }
+
+            // Always set the latest known name when creating the workspace for the first time
+            {
+                let name = { self.workspace_names.get(&idx).cloned() };
+                if name.is_some() {
+                    self.workspaces_mut()
+                        .get_mut(idx)
+                        .ok_or_eyre("there is no workspace")?
+                        .name = name;
+                }
+            }
+
+            Ok(())
+        }
     }
 
     pub fn new_workspace_idx(&self) -> usize {
@@ -569,6 +689,33 @@ mod tests {
 
         // Should have only 2 workspaces
         assert_eq!(m.workspaces().len(), 2);
+    }
+
+    #[test]
+    fn removing_workspaces_preserves_selection_and_never_empties_monitor() {
+        let mut m = Monitor::placeholder();
+        m.ensure_workspace_count(3);
+        m.workspace_names.insert(2, "selected".into());
+        m.focus_workspace(2).unwrap();
+        assert!(m.remove_workspace_by_idx(0).is_some());
+        assert_eq!(m.focused_workspace_idx(), 1);
+        m.focus_workspace(1).unwrap();
+        assert_eq!(
+            m.workspace_names.get(&1).map(String::as_str),
+            Some("selected")
+        );
+        assert_eq!(
+            m.focused_workspace().unwrap().name.as_deref(),
+            Some("selected")
+        );
+        assert!(m.remove_workspace_by_idx(1).is_some());
+        assert_eq!(m.focused_workspace_idx(), 0);
+        assert!(m.remove_workspace_by_idx(0).is_some());
+        assert_eq!(m.workspaces().len(), 1);
+        assert!(m.focused_workspace().is_some());
+        let before = m.clone();
+        assert!(m.remove_workspace_by_idx(99).is_none());
+        assert_eq!(m, before);
     }
 
     #[test]
