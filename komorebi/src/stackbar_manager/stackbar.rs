@@ -29,6 +29,7 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::Foundation::LPARAM;
 use windows::Win32::Foundation::LRESULT;
 use windows::Win32::Foundation::WPARAM;
+use windows::Win32::Graphics::Gdi::BeginPaint;
 use windows::Win32::Graphics::Gdi::CreateFontIndirectW;
 use windows::Win32::Graphics::Gdi::CreatePen;
 use windows::Win32::Graphics::Gdi::CreateSolidBrush;
@@ -38,16 +39,18 @@ use windows::Win32::Graphics::Gdi::DT_SINGLELINE;
 use windows::Win32::Graphics::Gdi::DT_VCENTER;
 use windows::Win32::Graphics::Gdi::DeleteObject;
 use windows::Win32::Graphics::Gdi::DrawTextW;
+use windows::Win32::Graphics::Gdi::EndPaint;
 use windows::Win32::Graphics::Gdi::FONT_QUALITY;
 use windows::Win32::Graphics::Gdi::FW_BOLD;
-use windows::Win32::Graphics::Gdi::GetDC;
 use windows::Win32::Graphics::Gdi::GetDeviceCaps;
+use windows::Win32::Graphics::Gdi::HDC;
+use windows::Win32::Graphics::Gdi::InvalidateRect;
 use windows::Win32::Graphics::Gdi::LOGFONTW;
 use windows::Win32::Graphics::Gdi::LOGPIXELSY;
+use windows::Win32::Graphics::Gdi::PAINTSTRUCT;
 use windows::Win32::Graphics::Gdi::PROOF_QUALITY;
 use windows::Win32::Graphics::Gdi::PS_SOLID;
 use windows::Win32::Graphics::Gdi::Rectangle;
-use windows::Win32::Graphics::Gdi::ReleaseDC;
 use windows::Win32::Graphics::Gdi::RoundRect;
 use windows::Win32::Graphics::Gdi::SelectObject;
 use windows::Win32::Graphics::Gdi::SetBkColor;
@@ -69,6 +72,7 @@ use windows::Win32::UI::WindowsAndMessaging::SetLayeredWindowAttributes;
 use windows::Win32::UI::WindowsAndMessaging::TranslateMessage;
 use windows::Win32::UI::WindowsAndMessaging::WM_DESTROY;
 use windows::Win32::UI::WindowsAndMessaging::WM_LBUTTONDOWN;
+use windows::Win32::UI::WindowsAndMessaging::WM_PAINT;
 use windows::Win32::UI::WindowsAndMessaging::WM_SETCURSOR;
 use windows::Win32::UI::WindowsAndMessaging::WNDCLASSW;
 use windows::Win32::UI::WindowsAndMessaging::WS_EX_LAYERED;
@@ -167,13 +171,6 @@ impl Stackbar {
         container: &mut Container,
         layout: &Rect,
     ) -> color_eyre::Result<()> {
-        let width = STACKBAR_TAB_WIDTH.load_consume();
-        let height = STACKBAR_TAB_HEIGHT.load_consume();
-        let gap = DEFAULT_CONTAINER_PADDING.load_consume();
-        let background = STACKBAR_TAB_BACKGROUND_COLOUR.load_consume();
-        let focused_text_colour = STACKBAR_FOCUSED_TEXT_COLOUR.load_consume();
-        let unfocused_text_colour = STACKBAR_UNFOCUSED_TEXT_COLOUR.load_consume();
-
         // The wndproc takes this lock on WM_LBUTTONDOWN, so release it before the
         // synchronous position_window call below or the two threads can deadlock
         {
@@ -188,18 +185,45 @@ impl Stackbar {
         layout.top -= workspace_specific_offset + STACKBAR_TAB_HEIGHT.load_consume();
         layout.left -= workspace_specific_offset;
 
-        // Async causes the stackbar to disappear or flicker because we modify it right after,
-        // so we have to do a synchronous call
-        WindowsApi::position_window(self.hwnd, &layout, false, false)?;
+        let layout = self.get_position_from_container_layout(&layout);
+        WindowsApi::position_window(self.hwnd, &layout, true, false)?;
+
+        // Draw on the window thread so exposure, resizing, and invalidation all
+        // repaint the tabs instead of leaving the transparent background visible.
+        unsafe {
+            let _ = InvalidateRect(Some(self.hwnd()), None, true);
+        }
+
+        Ok(())
+    }
+
+    fn paint(container: &Container, hdc: HDC) -> color_eyre::Result<()> {
+        let width = STACKBAR_TAB_WIDTH.load_consume();
+        let height = STACKBAR_TAB_HEIGHT.load_consume();
+        let gap = DEFAULT_CONTAINER_PADDING.load_consume();
+        let background = STACKBAR_TAB_BACKGROUND_COLOUR.load_consume();
+        let focused_text_colour = STACKBAR_FOCUSED_TEXT_COLOUR.load_consume();
+        let unfocused_text_colour = STACKBAR_UNFOCUSED_TEXT_COLOUR.load_consume();
+
+        // Resolve labels before selecting GDI objects so a closed window cannot
+        // return early and leak those objects.
+        let labels = container
+            .windows()
+            .iter()
+            .map(|window| match STACKBAR_LABEL.load() {
+                StackbarLabel::Process => window
+                    .exe()
+                    .map(|exe| exe.trim_end_matches(".exe").to_string()),
+                StackbarLabel::Title => window.title(),
+            })
+            .collect::<color_eyre::Result<Vec<_>>>()?;
 
         unsafe {
-            let hdc = GetDC(Option::from(self.hwnd()));
-
             let hpen = CreatePen(PS_SOLID, 0, COLORREF(background));
             let hbrush = CreateSolidBrush(COLORREF(background));
 
-            SelectObject(hdc, hpen.into());
-            SelectObject(hdc, hbrush.into());
+            let old_pen = SelectObject(hdc, hpen.into());
+            let old_brush = SelectObject(hdc, hbrush.into());
             SetBkColor(hdc, COLORREF(background));
 
             let mut logfont = LOGFONTW {
@@ -226,7 +250,7 @@ impl Stackbar {
 
             let hfont = CreateFontIndirectW(&logfont);
 
-            SelectObject(hdc, hfont.into());
+            let old_font = SelectObject(hdc, hfont.into());
 
             for (i, window) in container.windows().iter().enumerate() {
                 if window.hwnd == container.focused_window().copied().unwrap_or_default().hwnd {
@@ -272,15 +296,7 @@ impl Stackbar {
                     }
                 }
 
-                let label = match STACKBAR_LABEL.load() {
-                    StackbarLabel::Process => {
-                        let exe = window.exe()?;
-                        exe.trim_end_matches(".exe").to_string()
-                    }
-                    StackbarLabel::Title => window.title()?,
-                };
-
-                let mut tab_title: Vec<u16> = label.encode_utf16().collect();
+                let mut tab_title: Vec<u16> = labels[i].encode_utf16().collect();
 
                 rect.left_padding(10);
                 rect.right_padding(10);
@@ -293,7 +309,9 @@ impl Stackbar {
                 );
             }
 
-            ReleaseDC(Option::from(self.hwnd()), hdc);
+            SelectObject(hdc, old_font);
+            SelectObject(hdc, old_brush);
+            SelectObject(hdc, old_pen);
             // TODO: error handling
             let _ = DeleteObject(hpen.into());
             // TODO: error handling
@@ -320,6 +338,19 @@ impl Stackbar {
     ) -> LRESULT {
         unsafe {
             match msg {
+                WM_PAINT => {
+                    let mut paint = PAINTSTRUCT::default();
+                    let hdc = BeginPaint(hwnd, &mut paint);
+                    // Do not hold this lock while querying application windows.
+                    let container = STACKBARS_CONTAINERS.lock().get(&(hwnd.0 as isize)).cloned();
+                    if let Some(container) = container
+                        && let Err(error) = Self::paint(&container, hdc)
+                    {
+                        tracing::warn!("could not paint stackbar: {error}");
+                    }
+                    let _ = EndPaint(hwnd, &paint);
+                    LRESULT(0)
+                }
                 WM_SETCURSOR => match LoadCursorW(None, IDC_ARROW) {
                     Ok(cursor) => {
                         SetCursor(Some(cursor));
