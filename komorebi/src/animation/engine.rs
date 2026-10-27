@@ -68,9 +68,15 @@ impl AnimationEngine {
                 }
             }
 
-            render_dispatcher.pre_render()?;
-
+            // Register before pre_render notifies dependent managers, so they
+            // observe this movement as active even during setup.
             ANIMATION_MANAGER.lock().start(animation_key.as_str());
+            if let Err(error) = render_dispatcher.pre_render() {
+                ANIMATION_MANAGER.lock().end(animation_key.as_str());
+                render_dispatcher.cleanup_on_cancel();
+                tracing::warn!(%animation_key, "animation setup failed: {error}");
+                return Err(error);
+            }
 
             let target_frame_time =
                 Duration::from_millis(1000 / ANIMATION_FPS.load(Ordering::Relaxed));
@@ -114,9 +120,64 @@ impl AnimationEngine {
                 render_dispatcher.render(progress).ok();
             }
 
-            render_dispatcher.post_render()
+            if let Err(error) = render_dispatcher.post_render() {
+                render_dispatcher.cleanup_on_cancel();
+                tracing::warn!(%animation_key, "animation finalisation failed: {error}");
+                return Err(error);
+            }
+            Ok(())
         });
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    struct FailedSetup {
+        cleaned: mpsc::Sender<bool>,
+    }
+
+    impl RenderDispatcher for FailedSetup {
+        fn get_animation_key(&self) -> String {
+            "movement:test-failed-setup".to_string()
+        }
+
+        fn pre_render(&self) -> eyre::Result<()> {
+            assert!(
+                ANIMATION_MANAGER
+                    .lock()
+                    .in_progress(&self.get_animation_key())
+            );
+            eyre::bail!("simulated setup failure")
+        }
+
+        fn render(&self, _: f64) -> eyre::Result<()> {
+            panic!("failed setup must not render")
+        }
+
+        fn post_render(&self) -> eyre::Result<()> {
+            panic!("failed setup must not finish normally")
+        }
+
+        fn cleanup_on_cancel(&self) {
+            self.cleaned
+                .send(
+                    ANIMATION_MANAGER
+                        .lock()
+                        .in_progress(&self.get_animation_key()),
+                )
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn failed_setup_releases_animation_and_runs_cleanup() {
+        let (cleaned, receiver) = mpsc::channel();
+        AnimationEngine::animate(FailedSetup { cleaned }, Duration::from_millis(1)).unwrap();
+        assert!(!receiver.recv_timeout(Duration::from_secs(5)).unwrap());
     }
 }
